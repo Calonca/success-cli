@@ -1,8 +1,8 @@
 [package]
-name = "notnot-cli"
+name = "success-cli"
 version = "0.1.0"
 edition = "2021"
-description = "CLI for the NotNot goals app"
+description = "CLI for achieving goals"
 
 [dependencies]
 anyhow = "1.0"
@@ -15,4 +15,4 @@ ratatui = "0.26"
 serde_yaml = "0.9"
 fuzzy-matcher = "0.3"
 libc = "0.2"
-notelib = { path = "../notelib" }
+successlib = { path = "../success-lib" }

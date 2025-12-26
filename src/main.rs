@@ -1,5 +1,4 @@
 use libc::{kill, setsid, SIGTERM};
-use notelib::get_note;
 use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -16,10 +15,6 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, terminal};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use notelib::{
-    add_goal, add_session, edit_note, get_formatted_session_time_range, list_day_sessions,
-    list_goals, Goal, Session, SessionKind,
-};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -27,6 +22,10 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
+use successlib::{
+    add_goal, add_session, edit_note, get_formatted_session_time_range, list_day_sessions,
+    list_goals, get_note, Goal, Session, SessionKind,
+};
 
 fn render_timer_footer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, timer: &TimerState) {
     let pct = if timer.total == 0 {
@@ -268,7 +267,7 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
     }
 
     let header = Paragraph::new(header_line)
-        .block(Block::default().borders(Borders::ALL).title("NotNot CLI"));
+        .block(Block::default().borders(Borders::ALL).title("Success CLI"));
     f.render_widget(header, chunks[0]);
 
     let items = build_view_items(state);
@@ -1298,9 +1297,6 @@ fn resolve_archive_interactive(preferred: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = preferred {
         return Ok(path);
     }
-    if let Ok(env_path) = std::env::var("NOTNOT_ARCHIVE") {
-        return Ok(PathBuf::from(env_path));
-    }
     let cfg_path = config_path()?;
     if cfg_path.exists() {
         if let Ok(content) = fs::read_to_string(&cfg_path) {
@@ -1325,5 +1321,5 @@ fn resolve_archive_interactive(preferred: Option<PathBuf>) -> Result<PathBuf> {
 
 fn config_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME not set; please set HOME")?;
-    Ok(Path::new(&home).join(".config/notnot/config.json"))
+    Ok(Path::new(&home).join(".config/success-cli/config.json"))
 }
