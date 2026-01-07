@@ -1,6 +1,6 @@
 use libc::{kill, setsid, SIGTERM};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use chrono::Duration as ChronoDuration;
 use chrono::{DateTime, Local, NaiveDate, Utc};
-use crossterm::cursor::SetCursorStyle;
+use crossterm::cursor::{MoveTo, SetCursorStyle};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use crossterm::{execute, terminal};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -23,9 +23,17 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragra
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use successlib::{
-    add_goal, add_session, edit_note, get_formatted_session_time_range, list_day_sessions,
-    list_goals, get_note, Goal, Session, SessionKind,
+    add_goal, add_session, edit_note, get_formatted_session_time_range, get_note,
+    list_day_sessions, list_goals, Goal, Session, SessionKind,
 };
+#[cfg(target_os = "macos")]
+const FILE_MANAGER_COMMAND: &str = "open";
+#[cfg(target_os = "windows")]
+const FILE_MANAGER_COMMAND: &str = "explorer";
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const FILE_MANAGER_COMMAND: &str = "xdg-open";
+
+const DEFAULT_EDITOR: &str = "nvim";
 
 fn render_timer_footer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, timer: &TimerState) {
     let pct = if timer.total == 0 {
@@ -131,6 +139,7 @@ struct AppState {
     notes: String,
     notes_cursor: usize,
     status: Option<String>,
+    needs_full_redraw: bool,
 }
 
 #[derive(Debug)]
@@ -169,6 +178,7 @@ fn main() -> Result<()> {
         notes: String::new(),
         notes_cursor: 0,
         status: None,
+        needs_full_redraw: false,
     };
 
     // Start focused on the most recent item (last in list) if any exist.
@@ -210,6 +220,10 @@ fn run_app<B: ratatui::backend::Backend>(
     state: &mut AppState,
 ) -> Result<()> {
     loop {
+        if state.needs_full_redraw {
+            terminal.clear()?;
+            state.needs_full_redraw = false;
+        }
         if state.timer.is_some() {
             tick_timer(state);
         }
@@ -251,10 +265,9 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         .split(chunks[1]);
 
     let mut header_line = format!(
-        "Archive: {} | Day: {} | Mode: {}",
+        "Archive: {} (open with 'o') | Mode: {} ",
         state.archive.display(),
-        format_day_label(state.current_day),
-        format_mode(&state.mode)
+        format_mode(&state.mode),
     );
     if let Some(timer) = &state.timer {
         header_line.push_str(&format!(
@@ -275,8 +288,9 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         .iter()
         .map(|item| ListItem::new(Line::from(item.label.clone())))
         .collect();
+    let title = format!("Sessions of {}", format_day_label(state.current_day));
     let list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title("Sessions"))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -291,7 +305,7 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
     let notes_title = if matches!(state.mode, Mode::NotesEdit) {
         "Notes (Esc to stop editing)"
     } else {
-        "Notes (press 'e' to edit)"
+        "Notes (press 'e' to edit, 'E' for external editor)"
     };
     let notes_block = Block::default().borders(Borders::ALL).title(notes_title);
 
@@ -518,6 +532,28 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 state.mode = Mode::NotesEdit;
             }
         }
+        KeyCode::Char('E') => {
+            if selected_goal_id(state).is_some() {
+                match open_notes_in_external_editor(state) {
+                    Ok(_) => {
+                        state.status = Some("Notes updated via external editor".to_string());
+                    }
+                    Err(err) => {
+                        state.status = Some(format!("Failed to open editor: {err}"));
+                    }
+                }
+            } else {
+                state.status = Some("Select a goal before editing notes".to_string());
+            }
+        }
+        KeyCode::Char('o') => match open_archive_in_file_manager(state) {
+            Ok(_) => {
+                state.status = Some("Opening archive in file manager".to_string());
+            }
+            Err(err) => {
+                state.status = Some(format!("Failed to open archive: {err}"));
+            }
+        },
         KeyCode::Enter => {
             let items = build_view_items(state);
             let Some(item) = items.get(state.selected) else {
@@ -1144,6 +1180,139 @@ fn move_notes_cursor_vert(state: &mut AppState, delta: isize) {
     } else {
         state.notes_cursor = line_end;
     }
+}
+
+fn open_archive_in_file_manager(state: &AppState) -> Result<()> {
+    let path = state.archive.clone();
+    if !path.exists() {
+        fs::create_dir_all(&path)?;
+    }
+
+    Command::new(FILE_MANAGER_COMMAND)
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("Failed to start {FILE_MANAGER_COMMAND}"))?;
+
+    Ok(())
+}
+
+fn open_notes_in_external_editor(state: &mut AppState) -> Result<()> {
+    let goal_id = selected_goal_id(state).context("No goal selected for note editing")?;
+    refresh_notes_for_selection(state)?;
+    save_notes_for_selection(state)?;
+
+    // successlib saves notes to archive/notes/goal_<id>.md
+    let note_path = state
+        .archive
+        .join("notes")
+        .join(format!("goal_{goal_id}.md"));
+
+    let editor_value = std::env::var("EDITOR").unwrap_or_else(|_| DEFAULT_EDITOR.to_string());
+    let mut editor_parts = parse_editor_command(editor_value.trim());
+    if editor_parts.is_empty() {
+        editor_parts.push(DEFAULT_EDITOR.to_string());
+    }
+    let editor_bin = editor_parts.remove(0);
+    let editor_args = editor_parts;
+
+    let note_for_run = note_path.clone();
+    with_terminal_suspended(move || {
+        println!("Opening notes with {} (goal {})...", editor_bin, goal_id);
+        io::stdout().flush().ok();
+
+        let mut command = Command::new(&editor_bin);
+        for arg in &editor_args {
+            command.arg(arg);
+        }
+        command.arg(&note_for_run);
+        command.stdin(Stdio::inherit());
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+        let status = command
+            .status()
+            .with_context(|| format!("Failed to run {editor_bin}"))?;
+        if !status.success() {
+            bail!("Editor exited with status {status}");
+        }
+        Ok(())
+    })?;
+
+    // Reload notes in case the editor changed the file on disk.
+    refresh_notes_for_selection(state)?;
+    state.notes_cursor = state.notes.len();
+    state.needs_full_redraw = true;
+    Ok(())
+}
+
+fn with_terminal_suspended<F>(action: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    disable_raw_mode()?;
+    {
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            terminal::LeaveAlternateScreen,
+            event::DisableMouseCapture
+        )?;
+    }
+
+    let result = action();
+
+    {
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            terminal::EnterAlternateScreen,
+            event::EnableMouseCapture,
+            SetCursorStyle::SteadyBar,
+            Clear(ClearType::All),
+            MoveTo(0, 0)
+        )?;
+    }
+    enable_raw_mode()?;
+
+    result
+}
+
+fn parse_editor_command(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\\' if !in_single => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
 }
 
 fn parse_commands_input(input: &str) -> Vec<String> {
