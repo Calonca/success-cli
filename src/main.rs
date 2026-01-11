@@ -23,7 +23,7 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragra
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use successlib::{
-    add_goal, add_session, edit_note, get_formatted_session_time_range, get_note,
+    add_goal, add_session, edit_note, edit_note_api, get_formatted_session_time_range, get_note,
     list_day_sessions, list_goals, Goal, Session, SessionKind,
 };
 #[cfg(target_os = "macos")]
@@ -444,6 +444,7 @@ enum SearchResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewItemKind {
+    RunningTimer,
     Existing(SessionKind, usize),
     AddSession,
     AddReward,
@@ -461,6 +462,16 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
         items.push(ViewItem {
             label: format!("{prefix} {} ({duration}m) [{times}]", n.name),
             kind: ViewItemKind::Existing(n.kind, idx),
+        });
+    }
+    if let Some(timer) = &state.timer {
+        let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
+        items.push(ViewItem {
+            label: format!(
+                "[*] Running: {} ({}s left) [started {started_local}]",
+                timer.label, timer.remaining
+            ),
+            kind: ViewItemKind::RunningTimer,
         });
     }
     // Only offer add rows when no timer is running.
@@ -579,6 +590,7 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                     state.search_input.clear();
                     state.search_selected = 0;
                 }
+                ViewItemKind::RunningTimer => {}
                 ViewItemKind::Existing(_, _) => {}
             }
         }
@@ -823,7 +835,7 @@ fn tick_timer(state: &mut AppState) {
         // the PC is suspended or the terminal is backgrounded
         let now_utc = Utc::now();
         let elapsed_seconds = (now_utc - timer.started_at).num_seconds();
-        
+
         if elapsed_seconds >= 0 {
             let elapsed = elapsed_seconds as u64;
             if elapsed >= timer.total {
@@ -831,7 +843,7 @@ fn tick_timer(state: &mut AppState) {
             } else {
                 timer.remaining = timer.total - elapsed;
             }
-            
+
             if timer.remaining == 0 {
                 finish_timer(state);
             }
@@ -843,7 +855,24 @@ fn finish_timer(state: &mut AppState) {
     if let Some(mut timer) = state.timer.take() {
         kill_spawned(&mut timer.spawned);
         state.mode = Mode::View;
-        let timer_day = timer.started_at.with_timezone(&Local).date_naive();
+
+        let duration_secs = timer.total.min(u32::MAX as u64) as u32;
+        let created = match add_session(
+            &state.archive,
+            timer.goal_id,
+            &timer.label,
+            timer.started_at,
+            duration_secs,
+            timer.is_reward,
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                state.status = Some(format!("Failed to record session: {e}"));
+                return;
+            }
+        };
+
+        let timer_day = created.start_at.with_timezone(&Local).date_naive();
         if state.current_day == timer_day {
             match list_day_sessions(&state.archive, timer_day) {
                 Ok(nodes) => {
@@ -887,29 +916,8 @@ fn start_timer(
     }
 
     let started_at = Utc::now();
-    let created = match add_session(
-        &state.archive,
-        goal_id,
-        &goal_name,
-        started_at,
-        seconds,
-        is_reward,
-    ) {
-        Ok(session) => session,
-        Err(e) => {
-            state.status = Some(format!("Failed to record session: {e}"));
-            return Ok(());
-        }
-    };
-
     let commands = commands_for_goal(state, goal_id);
     let spawned = spawn_commands(&commands);
-
-    if state.current_day == created.start_at.with_timezone(&Local).date_naive() {
-        state.nodes = list_day_sessions(&state.archive, state.current_day)?;
-        state.selected = build_view_items(state).len().saturating_sub(1);
-    }
-
     state.timer = Some(TimerState {
         label: goal_name,
         goal_id,
@@ -917,8 +925,12 @@ fn start_timer(
         total: seconds as u64,
         is_reward,
         spawned,
-        started_at: created.start_at,
+        started_at,
     });
+    state.selected = build_view_items(state).len().saturating_sub(1);
+    if let Err(e) = append_session_start_header(&state.archive, goal_id, started_at) {
+        state.status = Some(format!("Failed to prepare notes: {e}"));
+    }
     refresh_notes_for_selection(state)?;
     state.mode = Mode::Timer;
     state.status = Some(format!(
@@ -980,14 +992,28 @@ fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
 
 fn selected_goal_id(state: &AppState) -> Option<u64> {
     let items = build_view_items(state);
-    if let Some(ViewItemKind::Existing(_, idx)) = items.get(state.selected).map(|v| v.kind) {
-        if let Some(node) = state.nodes.get(idx) {
-            return Some(node.goal_id);
-        }
+    match items.get(state.selected).map(|v| v.kind) {
+        Some(ViewItemKind::RunningTimer) => state.timer.as_ref().map(|t| t.goal_id),
+        Some(ViewItemKind::Existing(_, idx)) => state.nodes.get(idx).map(|n| n.goal_id),
+        _ => state.timer.as_ref().map(|t| t.goal_id),
     }
+}
 
-    // Fallback: when a timer is running but the node is not yet saved, allow notes on that goal.
-    state.timer.as_ref().map(|t| t.goal_id)
+fn append_session_start_header(
+    archive: &Path,
+    goal_id: u64,
+    start_at: DateTime<Utc>,
+) -> Result<()> {
+    let mut note = get_note(archive, goal_id).unwrap_or_default();
+
+    let start_local = start_at.with_timezone(&Local);
+    let start_stamp = start_local.format("%Y-%m-%d %H:%M");
+    note.push_str(&format!("---\n{start_stamp}\n"));
+
+    edit_note_api(archive.to_string_lossy().to_string(), goal_id, note)
+        .context("Failed to append session header")?;
+
+    Ok(())
 }
 
 fn refresh_notes_for_selection(state: &mut AppState) -> Result<()> {
