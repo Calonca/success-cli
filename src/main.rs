@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::Duration as ChronoDuration;
@@ -148,7 +148,6 @@ struct TimerState {
     goal_id: u64,
     remaining: u64,
     total: u64,
-    last_tick: Instant,
     is_reward: bool,
     spawned: Vec<SpawnedCommand>,
     started_at: DateTime<Utc>,
@@ -166,7 +165,7 @@ fn main() -> Result<()> {
     let today = Local::now().date_naive();
     let mut state = AppState {
         archive: archive.clone(),
-        goals: list_goals(&archive)?,
+        goals: list_goals(&archive, None)?,
         nodes: list_day_sessions(&archive, today)?,
         current_day: today,
         selected: 0,
@@ -819,12 +818,20 @@ fn handle_notes_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
 
 fn tick_timer(state: &mut AppState) {
     if let Some(timer) = state.timer.as_mut() {
-        let now = Instant::now();
-        if now.duration_since(timer.last_tick) >= Duration::from_secs(1) {
-            timer.last_tick = now;
-            if timer.remaining > 0 {
-                timer.remaining -= 1;
+        // Calculate elapsed time based on real-world clock time (DateTime)
+        // instead of process time (Instant) so it works correctly when
+        // the PC is suspended or the terminal is backgrounded
+        let now_utc = Utc::now();
+        let elapsed_seconds = (now_utc - timer.started_at).num_seconds();
+        
+        if elapsed_seconds >= 0 {
+            let elapsed = elapsed_seconds as u64;
+            if elapsed >= timer.total {
+                timer.remaining = 0;
+            } else {
+                timer.remaining = timer.total - elapsed;
             }
+            
             if timer.remaining == 0 {
                 finish_timer(state);
             }
@@ -908,7 +915,6 @@ fn start_timer(
         goal_id,
         remaining: seconds as u64,
         total: seconds as u64,
-        last_tick: Instant::now(),
         is_reward,
         spawned,
         started_at: created.start_at,
