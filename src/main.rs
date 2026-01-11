@@ -853,7 +853,10 @@ fn tick_timer(state: &mut AppState) {
 
 fn finish_timer(state: &mut AppState) {
     if let Some(mut timer) = state.timer.take() {
-        kill_spawned(&mut timer.spawned);
+        // Only kill spawned apps when finishing a reward, not a regular session
+        if timer.is_reward {
+            kill_spawned(&mut timer.spawned);
+        }
         state.mode = Mode::View;
 
         let duration_secs = timer.total.min(u32::MAX as u64) as u32;
