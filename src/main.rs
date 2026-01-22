@@ -13,8 +13,6 @@ use crossterm::cursor::{MoveTo, SetCursorStyle};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use crossterm::{execute, terminal};
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -24,7 +22,8 @@ use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use successlib::{
     add_goal, add_session, edit_note, edit_note_api, get_formatted_session_time_range, get_note,
-    list_day_sessions, list_goals, Goal, Session, SessionKind,
+    list_day_sessions, list_goals, list_sessions_between_dates, search_goals, Goal, Session,
+    SessionKind,
 };
 #[cfg(target_os = "macos")]
 const FILE_MANAGER_COMMAND: &str = "open";
@@ -474,8 +473,8 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
             kind: ViewItemKind::RunningTimer,
         });
     }
-    // Only offer add rows when no timer is running.
-    if state.timer.is_none() {
+    // Only offer add rows when no timer is running AND we are viewing today.
+    if state.timer.is_none() && state.current_day == Local::now().date_naive() {
         if state
             .nodes
             .last()
@@ -646,6 +645,29 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                     }
                     SearchResult::Existing(goal) => {
                         state.duration_input.clear();
+                        if let Ok(recent) =
+                            list_sessions_between_dates(&state.archive, None, None)
+                        {
+                            if let Some(last) = recent
+                                .iter()
+                                .filter(|s| s.goal_id == goal.id)
+                                .max_by_key(|s| s.start_at)
+                            {
+                                let duration_mins =
+                                    (last.end_at - last.start_at).num_minutes();
+                                if duration_mins > 0 {
+                                    let h = duration_mins / 60;
+                                    let m = duration_mins % 60;
+                                    if h > 0 && m > 0 {
+                                        state.duration_input = format!("{}h {}m", h, m);
+                                    } else if h > 0 {
+                                        state.duration_input = format!("{}h", h);
+                                    } else {
+                                        state.duration_input = format!("{}m", m);
+                                    }
+                                }
+                            }
+                        }
                         state.mode = Mode::DurationInput {
                             is_reward: matches!(state.mode, Mode::AddReward),
                             goal_name: goal.name.clone(),
@@ -944,25 +966,15 @@ fn start_timer(
 }
 
 fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
-    let matcher = SkimMatcherV2::default();
     let q = state.search_input.trim();
     let is_reward = matches!(state.mode, Mode::AddReward);
-    let mut scored: Vec<(i64, Goal)> = state
-        .goals
-        .iter()
-        .filter(|g| g.is_reward == is_reward)
-        .filter_map(|g| {
-            if q.is_empty() {
-                Some((0, g.clone()))
-            } else {
-                matcher.fuzzy_match(&g.name, q).map(|s| (s, g.clone()))
-            }
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut results: Vec<(String, SearchResult)> = scored
+
+    // Use the library function which handles fuzzy matching and sorting by recent
+    let goals = search_goals(&state.archive, q, Some(is_reward), None, true).unwrap_or_default();
+
+    let mut results: Vec<(String, SearchResult)> = goals
         .into_iter()
-        .map(|(_, g)| {
+        .map(|g| {
             (
                 format!("{} (id {})", g.name, g.id),
                 SearchResult::Existing(g),
@@ -971,24 +983,21 @@ fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
         .collect();
 
     let create_label = format!("Create: {q}");
-    results.insert(
-        0,
-        (
-            create_label,
-            SearchResult::Create {
-                name: if q.is_empty() {
-                    if is_reward {
-                        "New reward".to_string()
-                    } else {
-                        "New goal".to_string()
-                    }
+    results.push((
+        create_label,
+        SearchResult::Create {
+            name: if q.is_empty() {
+                if is_reward {
+                    "New reward".to_string()
                 } else {
-                    q.to_string()
-                },
-                is_reward,
+                    "New goal".to_string()
+                }
+            } else {
+                q.to_string()
             },
-        ),
-    );
+            is_reward,
+        },
+    ));
 
     results
 }
@@ -1455,22 +1464,50 @@ fn kill_spawned(spawned: &mut [SpawnedCommand]) {
 }
 
 fn parse_duration(input: &str) -> Option<u64> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+    let input = input.trim();
+    if input.is_empty() {
         return None;
     }
-    let (num_part, unit_part) = trimmed
-        .chars()
-        .partition::<String, _>(|c| c.is_ascii_digit());
-    let value: u64 = num_part.parse().ok()?;
-    let unit = unit_part.to_ascii_lowercase();
-    let secs = match unit.as_str() {
-        "s" => value,
-        "m" | "" => value * 60,
-        "h" => value * 3600,
-        _ => return None,
-    };
-    Some(secs)
+
+    // Accumulate total seconds
+    let mut total_seconds = 0;
+    let mut current_digits = String::new();
+
+    // Custom parser for formats like "1h30m", "90m", "1h", "90"
+    for c in input.chars() {
+        if c.is_ascii_digit() {
+            current_digits.push(c);
+        } else if c.is_alphabetic() {
+            if current_digits.is_empty() {
+                continue; // Ignore unit without number? or error?
+            }
+            let val = current_digits.parse::<u64>().ok()?;
+            current_digits.clear();
+            match c.to_ascii_lowercase() {
+                'h' => total_seconds += val * 3600,
+                'm' => total_seconds += val * 60,
+                's' => total_seconds += val,
+                _ => return None, // Unknown unit
+            }
+        } else if c.is_whitespace() {
+            // Ignore whitespace
+        } else {
+            // Invalid character
+            return None;
+        }
+    }
+
+    if !current_digits.is_empty() {
+        // Trailing number without unit. Assume minutes.
+        let val = current_digits.parse::<u64>().ok()?;
+        total_seconds += val * 60;
+    }
+
+    if total_seconds == 0 {
+        None
+    } else {
+        Some(total_seconds)
+    }
 }
 
 fn format_day_label(day: NaiveDate) -> String {
