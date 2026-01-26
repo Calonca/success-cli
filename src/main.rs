@@ -644,30 +644,20 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                         };
                     }
                     SearchResult::Existing(goal) => {
-                        state.duration_input.clear();
-                        if let Ok(recent) =
-                            list_sessions_between_dates(&state.archive, None, None)
+                        let mut suggestion = None;
+                        if let Ok(recent) = list_sessions_between_dates(&state.archive, None, None)
                         {
                             if let Some(last) = recent
                                 .iter()
                                 .filter(|s| s.goal_id == goal.id)
                                 .max_by_key(|s| s.start_at)
                             {
-                                let duration_mins =
-                                    (last.end_at - last.start_at).num_minutes();
-                                if duration_mins > 0 {
-                                    let h = duration_mins / 60;
-                                    let m = duration_mins % 60;
-                                    if h > 0 && m > 0 {
-                                        state.duration_input = format!("{}h {}m", h, m);
-                                    } else if h > 0 {
-                                        state.duration_input = format!("{}h", h);
-                                    } else {
-                                        state.duration_input = format!("{}m", m);
-                                    }
-                                }
+                                let duration_mins = (last.end_at - last.start_at).num_minutes();
+                                suggestion = Some(format_duration_suggestion(duration_mins));
                             }
                         }
+                        let suggestion = suggestion.unwrap_or_else(|| "25m".to_string());
+                        state.duration_input = suggestion;
                         state.mode = Mode::DurationInput {
                             is_reward: matches!(state.mode, Mode::AddReward),
                             goal_name: goal.name.clone(),
@@ -733,7 +723,7 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             let created = add_goal(&state.archive, goal_name, is_reward, commands)?;
             state.goals.push(created.clone());
 
-            state.duration_input.clear();
+            state.duration_input = "25m".to_string();
             let goal_name = created.name.clone();
             let goal_id = created.id;
             state.mode = Mode::DurationInput {
@@ -1518,6 +1508,25 @@ fn format_day_label(day: NaiveDate) -> String {
         format!("{base} (today)")
     } else {
         format!("{base} (-{diff}d)")
+    }
+}
+
+fn format_duration_suggestion(duration_mins: i64) -> String {
+    if duration_mins == 0 {
+        return "1s".to_string();
+    }
+    let mins = duration_mins.max(0) as i64;
+    if mins == 0 {
+        return "1s".to_string();
+    }
+    let h = mins / 60;
+    let m = mins % 60;
+    if h > 0 && m > 0 {
+        format!("{}h {}m", h, m)
+    } else if h > 0 {
+        format!("{}h", h)
+    } else {
+        format!("{}m", m)
     }
 }
 
