@@ -15,4 +15,4 @@ ratatui = "0.26"
 serde_yaml = "0.9"
 fuzzy-matcher = "0.3"
 libc = "0.2"
-successlib = { path = "../success-lib" }
+successlib = { git = "https://github.com/Calonca/success-lib", branch = "main" }

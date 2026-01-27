@@ -1,6 +1,8 @@
+#[cfg(unix)]
 use libc::{kill, setsid, SIGTERM};
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -496,10 +498,8 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
 }
 
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if matches!(key.code, KeyCode::Char('c')) {
-            return Ok(true);
-        }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Ok(true);
     }
     match state.mode {
         Mode::View => handle_view_key(state, key),
@@ -1103,8 +1103,7 @@ fn move_notes_cursor_right(state: &mut AppState) {
     if let Some((idx, ch)) = state
         .notes
         .char_indices()
-        .skip_while(|(i, _)| *i < state.notes_cursor)
-        .next()
+        .find(|(i, _)| *i >= state.notes_cursor)
     {
         state.notes_cursor = idx + ch.len_utf8();
     } else {
@@ -1119,7 +1118,7 @@ fn move_notes_cursor_word_left(state: &mut AppState) {
     let mut idx = state.notes_cursor;
     // Skip trailing whitespace to the left
     while idx > 0 {
-        if let Some(ch) = state.notes[..idx].chars().rev().next() {
+        if let Some(ch) = state.notes[..idx].chars().next_back() {
             if ch.is_whitespace() {
                 idx = idx.saturating_sub(ch.len_utf8());
             } else {
@@ -1131,7 +1130,7 @@ fn move_notes_cursor_word_left(state: &mut AppState) {
     }
     // Skip the word
     while idx > 0 {
-        if let Some(ch) = state.notes[..idx].chars().rev().next() {
+        if let Some(ch) = state.notes[..idx].chars().next_back() {
             if !ch.is_whitespace() {
                 idx = idx.saturating_sub(ch.len_utf8());
             } else {
@@ -1351,7 +1350,7 @@ fn parse_editor_command(input: &str) -> Vec<String> {
 
 fn parse_commands_input(input: &str) -> Vec<String> {
     input
-        .split(|c| c == ';' || c == '\n')
+        .split([';', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -1367,6 +1366,7 @@ fn commands_for_goal(state: &AppState, goal_id: u64) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn spawn_commands(commands: &[String]) -> Vec<SpawnedCommand> {
     commands
         .iter()
@@ -1413,6 +1413,51 @@ fn spawn_commands(commands: &[String]) -> Vec<SpawnedCommand> {
         .collect()
 }
 
+#[cfg(not(unix))]
+fn spawn_commands(commands: &[String]) -> Vec<SpawnedCommand> {
+    commands
+        .iter()
+        .map(|cmd| {
+            let child = if cfg!(target_os = "windows") {
+                let mut command = Command::new("cmd");
+                command
+                    .arg("/C")
+                    .arg(cmd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+            } else {
+                let mut command = Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(format!("exec {cmd}"))
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+            };
+
+            match child {
+                Ok(child) => SpawnedCommand {
+                    command: cmd.clone(),
+                    child: Some(child),
+                    pgid: 0,
+                },
+                Err(err) => {
+                    eprintln!("Failed to start '{cmd}': {err}");
+                    SpawnedCommand {
+                        command: cmd.clone(),
+                        child: None,
+                        pgid: 0,
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
 fn kill_spawned(spawned: &mut [SpawnedCommand]) {
     for sc in spawned.iter_mut() {
         if let Some(child) = sc.child.as_mut() {
@@ -1449,6 +1494,20 @@ fn kill_spawned(spawned: &mut [SpawnedCommand]) {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_spawned(spawned: &mut [SpawnedCommand]) {
+    for sc in spawned.iter_mut() {
+        if let Some(mut child) = sc.child.take() {
+            if let Err(err) = child.kill() {
+                if err.kind() != io::ErrorKind::InvalidInput {
+                    eprintln!("Failed to kill '{}': {err}", sc.command);
+                }
+            }
+            let _ = child.wait();
         }
     }
 }
@@ -1515,7 +1574,7 @@ fn format_duration_suggestion(duration_mins: i64) -> String {
     if duration_mins == 0 {
         return "1s".to_string();
     }
-    let mins = duration_mins.max(0) as i64;
+    let mins = duration_mins.max(0);
     if mins == 0 {
         return "1s".to_string();
     }
