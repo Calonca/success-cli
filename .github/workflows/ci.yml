@@ -41,7 +41,7 @@ jobs:
             target: x86_64-pc-windows-msvc
 
           - os_name: macOS
-            os: macOS-latest
+            os: macos-latest
             target: x86_64-apple-darwin
 
     steps:

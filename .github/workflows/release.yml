@@ -30,13 +30,13 @@ jobs:
             name: success-cli-Windows-x86_64.zip
 
           - os_name: macOS-x86_64
-            os: macOS-latest
+            os: macos-latest
             target: x86_64-apple-darwin
             bin: success-cli
             name: success-cli-Darwin-x86_64.tar.gz
 
           - os_name: macOS-aarch64
-            os: macOS-latest
+            os: macos-latest
             target: aarch64-apple-darwin
             bin: success-cli
             name: success-cli-Darwin-aarch64.tar.gz
@@ -50,6 +50,24 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build binary
         run: cargo build --release --target ${{ matrix.platform.target }}
 
@@ -58,14 +76,12 @@ jobs:
         run: |
           cd target/${{ matrix.platform.target }}/release
           tar czvf ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
-          cd -
 
       - name: Package as archive (Windows)
         if: matrix.platform.os == 'windows-latest'
         run: |
           cd target/${{ matrix.platform.target }}/release
           7z a ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
-          cd -
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
