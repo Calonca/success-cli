@@ -465,15 +465,18 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
             kind: ViewItemKind::Existing(n.kind, idx),
         });
     }
+    // Only show the running timer if we're viewing today.
     if let Some(timer) = &state.timer {
-        let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
-        items.push(ViewItem {
-            label: format!(
-                "[*] Running: {} ({}s left) [started {started_local}]",
-                timer.label, timer.remaining
-            ),
-            kind: ViewItemKind::RunningTimer,
-        });
+        if state.current_day == Local::now().date_naive() {
+            let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
+            items.push(ViewItem {
+                label: format!(
+                    "[*] Running: {} ({}s left) [started {started_local}]",
+                    timer.label, timer.remaining
+                ),
+                kind: ViewItemKind::RunningTimer,
+            });
+        }
     }
     // Only offer add rows when no timer is running AND we are viewing today.
     if state.timer.is_none() && state.current_day == Local::now().date_naive() {
