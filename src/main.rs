@@ -104,6 +104,16 @@ enum Mode {
         is_reward: bool,
         input: String,
     },
+    QuantityNameInput {
+        goal_name: String,
+        is_reward: bool,
+        commands: Vec<String>,
+        input: String,
+    },
+    QuantityDoneInput {
+        goal_name: String,
+        quantity_name: Option<String>,
+    },
     DurationInput {
         is_reward: bool,
         goal_name: String,
@@ -119,6 +129,8 @@ fn format_mode(mode: &Mode) -> &'static str {
         Mode::AddSession => "add-session",
         Mode::AddReward => "add-reward",
         Mode::CommandInput { .. } => "commands",
+        Mode::QuantityNameInput { .. } => "quantity-name",
+        Mode::QuantityDoneInput { .. } => "quantity-done",
         Mode::DurationInput { .. } => "duration",
         Mode::Timer => "timer",
         Mode::NotesEdit => "notes-edit",
@@ -136,7 +148,9 @@ struct AppState {
     search_input: String,
     search_selected: usize,
     duration_input: String,
+    quantity_input: String,
     timer: Option<TimerState>,
+    pending_session: Option<PendingSession>,
     notes: String,
     notes_cursor: usize,
     status: Option<String>,
@@ -151,6 +165,15 @@ struct TimerState {
     total: u64,
     is_reward: bool,
     spawned: Vec<SpawnedCommand>,
+    started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSession {
+    label: String,
+    goal_id: u64,
+    total: u64,
+    is_reward: bool,
     started_at: DateTime<Utc>,
 }
 
@@ -174,7 +197,9 @@ fn main() -> Result<()> {
         search_input: String::new(),
         search_selected: 0,
         duration_input: String::new(),
+        quantity_input: String::new(),
         timer: None,
+        pending_session: None,
         notes: String::new(),
         notes_cursor: 0,
         status: None,
@@ -414,6 +439,29 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             let para = Paragraph::new(input.clone()).block(block);
             f.render_widget(para, footer_area);
         }
+        Mode::QuantityNameInput {
+            ref goal_name,
+            ref input,
+            ..
+        } => {
+            let title = format!("Quantity name for {goal_name} (e.g., pages, reps). Blank to skip");
+            let block = Block::default().borders(Borders::ALL).title(title);
+            let para = Paragraph::new(input.clone()).block(block);
+            f.render_widget(para, footer_area);
+        }
+        Mode::QuantityDoneInput {
+            ref goal_name,
+            ref quantity_name,
+        } => {
+            let title = if let Some(name) = quantity_name {
+                format!("{name} done for goal {goal_name} (blank to skip)")
+            } else {
+                format!("Quantity done for goal {goal_name} (blank to skip)")
+            };
+            let block = Block::default().borders(Borders::ALL).title(title);
+            let para = Paragraph::new(state.quantity_input.clone()).block(block);
+            f.render_widget(para, footer_area);
+        }
         Mode::Timer => {
             let help = Paragraph::new(
                 "Timer running • Up/Down/Left/Right navigate • 'e' edit notes • Finish before starting another",
@@ -460,8 +508,15 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
         };
         let duration = (n.end_at - n.start_at).num_minutes();
         let times = get_formatted_session_time_range(n);
+        let unit = goal_quantity_name(state, n.goal_id)
+            .map(|u| format!(" {u}"))
+            .unwrap_or_default();
+        let qty_label = n
+            .quantity
+            .map(|q| format!("{q}{unit} in "))
+            .unwrap_or_default();
         items.push(ViewItem {
-            label: format!("{prefix} {} ({duration}m) [{times}]", n.name),
+            label: format!("{prefix} {} ({qty_label}{duration}m) [{times}]", n.name),
             kind: ViewItemKind::Existing(n.kind, idx),
         });
     }
@@ -491,8 +546,18 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
                 kind: ViewItemKind::AddReward,
             });
         } else {
+            let add_label = if let Mode::QuantityDoneInput {
+                ref goal_name,
+                ref quantity_name,
+            } = state.mode
+            {
+                let quantity_name = quantity_name.as_deref().unwrap_or("quantity");
+                format!("[+] Insert {quantity_name} for {goal_name}")
+            } else {
+                "[+] Work on new goal".to_string()
+            };
             items.push(ViewItem {
-                label: "[+] Work on new goal".to_string(),
+                label: add_label,
                 kind: ViewItemKind::AddSession,
             });
         }
@@ -508,6 +573,8 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         Mode::View => handle_view_key(state, key),
         Mode::AddSession | Mode::AddReward => handle_search_key(state, key),
         Mode::CommandInput { .. } => handle_command_key(state, key),
+        Mode::QuantityNameInput { .. } => handle_quantity_name_key(state, key),
+        Mode::QuantityDoneInput { .. } => handle_quantity_done_key(state, key),
         Mode::DurationInput { .. } => handle_duration_key(state, key),
         Mode::Timer => handle_timer_key(state, key),
         Mode::NotesEdit => handle_notes_key(state, key),
@@ -723,7 +790,57 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Enter => {
             let commands = parse_commands_input(input);
-            let created = add_goal(&state.archive, goal_name, is_reward, commands)?;
+            state.mode = Mode::QuantityNameInput {
+                goal_name: goal_name.clone(),
+                is_reward,
+                commands,
+                input: String::new(),
+            };
+        }
+        KeyCode::Backspace => {
+            input.pop();
+        }
+        KeyCode::Char(c) => {
+            if key.modifiers != KeyModifiers::CONTROL {
+                input.push(c);
+            }
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn handle_quantity_name_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    let Mode::QuantityNameInput {
+        ref goal_name,
+        is_reward,
+        ref commands,
+        ref mut input,
+    } = state.mode
+    else {
+        return Ok(false);
+    };
+
+    match key.code {
+        KeyCode::Esc => {
+            input.clear();
+            state.mode = Mode::View;
+        }
+        KeyCode::Enter => {
+            let quantity_name = input.trim();
+            let quantity_name = if quantity_name.is_empty() {
+                None
+            } else {
+                Some(quantity_name.to_string())
+            };
+            let created = add_goal(
+                &state.archive,
+                goal_name,
+                is_reward,
+                commands.clone(),
+                quantity_name,
+            )?;
             state.goals.push(created.clone());
 
             state.duration_input = "25m".to_string();
@@ -741,6 +858,41 @@ fn handle_command_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Char(c) => {
             if key.modifiers != KeyModifiers::CONTROL {
                 input.push(c);
+            }
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    let Mode::QuantityDoneInput { .. } = state.mode else {
+        return Ok(false);
+    };
+
+    match key.code {
+        KeyCode::Esc => {
+            state.quantity_input.clear();
+            if let Some(pending) = state.pending_session.take() {
+                finalize_session(state, pending, None);
+            } else {
+                state.mode = Mode::View;
+            }
+        }
+        KeyCode::Enter => {
+            let qty = parse_optional_u32(&state.quantity_input);
+            if let Some(pending) = state.pending_session.take() {
+                finalize_session(state, pending, qty);
+            }
+            state.quantity_input.clear();
+        }
+        KeyCode::Backspace => {
+            state.quantity_input.pop();
+        }
+        KeyCode::Char(c) => {
+            if key.modifiers != KeyModifiers::CONTROL {
+                state.quantity_input.push(c);
             }
         }
         _ => {}
@@ -872,44 +1024,28 @@ fn finish_timer(state: &mut AppState) {
         if timer.is_reward {
             kill_spawned(&mut timer.spawned);
         }
-        state.mode = Mode::View;
 
-        let duration_secs = timer.total.min(u32::MAX as u64) as u32;
-        let created = match add_session(
-            &state.archive,
-            timer.goal_id,
-            &timer.label,
-            timer.started_at,
-            duration_secs,
-            timer.is_reward,
-        ) {
-            Ok(session) => session,
-            Err(e) => {
-                state.status = Some(format!("Failed to record session: {e}"));
-                return;
-            }
+        let pending = PendingSession {
+            label: timer.label.clone(),
+            goal_id: timer.goal_id,
+            total: timer.total,
+            is_reward: timer.is_reward,
+            started_at: timer.started_at,
         };
 
-        let timer_day = created.start_at.with_timezone(&Local).date_naive();
-        if state.current_day == timer_day {
-            match list_day_sessions(&state.archive, timer_day) {
-                Ok(nodes) => {
-                    state.nodes = nodes;
-                    let items = build_view_items(state);
-                    state.selected = items.len().saturating_sub(1);
-                    if let Err(e) = refresh_notes_for_selection(state) {
-                        eprintln!("Failed to load notes: {e}");
-                    }
-                }
-                Err(e) => eprintln!("Failed to load day graph: {e}"),
+        if timer.is_reward {
+            finalize_session(state, pending, None);
+        } else {
+            state.pending_session = Some(pending);
+            state.quantity_input.clear();
+            state.mode = Mode::QuantityDoneInput {
+                goal_name: timer.label,
+                quantity_name: goal_quantity_name(state, timer.goal_id),
+            };
+            if let Some(unit) = goal_quantity_name(state, timer.goal_id) {
+                state.status = Some(format!("Enter quantity done ({unit})"));
             }
         }
-        let kind = if timer.is_reward {
-            SessionKind::Reward
-        } else {
-            SessionKind::Goal
-        };
-        state.status = Some(format!("Finished {}", kind_label(kind)));
     }
 }
 
@@ -956,6 +1092,64 @@ fn start_timer(
         if is_reward { "reward" } else { "session" }
     ));
     Ok(())
+}
+
+fn finalize_session(state: &mut AppState, pending: PendingSession, quantity: Option<u32>) {
+    state.mode = Mode::View;
+    let duration_secs = pending.total.min(u32::MAX as u64) as u32;
+    let created = match add_session(
+        &state.archive,
+        pending.goal_id,
+        &pending.label,
+        pending.started_at,
+        duration_secs,
+        pending.is_reward,
+        quantity,
+    ) {
+        Ok(session) => session,
+        Err(e) => {
+            state.status = Some(format!("Failed to record session: {e}"));
+            return;
+        }
+    };
+
+    let timer_day = created.start_at.with_timezone(&Local).date_naive();
+    if state.current_day == timer_day {
+        match list_day_sessions(&state.archive, timer_day) {
+            Ok(nodes) => {
+                state.nodes = nodes;
+                let items = build_view_items(state);
+                state.selected = items.len().saturating_sub(1);
+                if let Err(e) = refresh_notes_for_selection(state) {
+                    eprintln!("Failed to load notes: {e}");
+                }
+            }
+            Err(e) => eprintln!("Failed to load day graph: {e}"),
+        }
+    }
+    let kind = if pending.is_reward {
+        SessionKind::Reward
+    } else {
+        SessionKind::Goal
+    };
+    state.status = Some(format!("Finished {}", kind_label(kind)));
+}
+
+fn parse_optional_u32(input: &str) -> Option<u32> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        trimmed.parse::<u32>().ok()
+    }
+}
+
+fn goal_quantity_name(state: &AppState, goal_id: u64) -> Option<String> {
+    state
+        .goals
+        .iter()
+        .find(|g| g.id == goal_id)
+        .and_then(|g| g.quantity_name.clone())
 }
 
 fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
