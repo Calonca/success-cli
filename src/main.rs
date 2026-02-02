@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use chrono::Duration as ChronoDuration;
 use chrono::{DateTime, Local, NaiveDate, Utc};
+use clap::Parser;
 use crossterm::cursor::{MoveTo, SetCursorStyle};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
@@ -184,8 +185,18 @@ struct SpawnedCommand {
     pgid: i32,
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "success-cli")]
+#[command(about = "CLI for achieving goals", long_about = None)]
+struct Args {
+    /// Custom archive path (useful for testing)
+    #[arg(short, long)]
+    archive: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
-    let archive = resolve_archive_interactive(None)?;
+    let args = Args::parse();
+    let archive = resolve_archive_interactive(args.archive.clone())?;
     let today = Local::now().date_naive();
     let mut state = AppState {
         archive: archive.clone(),
@@ -211,7 +222,10 @@ fn main() -> Result<()> {
 
     refresh_notes_for_selection(&mut state)?;
 
-    persist_config(&archive).ok();
+    // Only persist config if archive wasn't provided via CLI argument
+    if args.archive.is_none() {
+        persist_config(&archive).ok();
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
