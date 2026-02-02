@@ -468,9 +468,9 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             ref quantity_name,
         } => {
             let title = if let Some(name) = quantity_name {
-                format!("{name} done for goal {goal_name} (blank to skip)")
+                format!("{name} done for {goal_name} (blank to skip)")
             } else {
-                format!("Quantity done for goal {goal_name} (blank to skip)")
+                format!("Quantity done for {goal_name} (blank to skip)")
             };
             let block = Block::default().borders(Borders::ALL).title(title);
             let para = Paragraph::new(state.quantity_input.clone()).block(block);
@@ -1047,18 +1047,21 @@ fn finish_timer(state: &mut AppState) {
             started_at: timer.started_at,
         };
 
-        if timer.is_reward {
-            finalize_session(state, pending, None);
-        } else {
+        let quantity_name = goal_quantity_name(state, timer.goal_id);
+        let needs_quantity = quantity_name.is_some();
+
+        if needs_quantity {
             state.pending_session = Some(pending);
             state.quantity_input.clear();
             state.mode = Mode::QuantityDoneInput {
                 goal_name: timer.label,
-                quantity_name: goal_quantity_name(state, timer.goal_id),
+                quantity_name,
             };
             if let Some(unit) = goal_quantity_name(state, timer.goal_id) {
                 state.status = Some(format!("Enter quantity done ({unit})"));
             }
+        } else {
+            finalize_session(state, pending, None);
         }
     }
 }
