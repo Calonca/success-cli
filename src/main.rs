@@ -54,7 +54,6 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
             .title(title)
             .border_style(Style::default().fg(Color::Blue));
 
-
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -101,10 +100,10 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(help, layout[5]);
 
-
         match form.current_field {
             FormField::GoalName => {
-                let cursor_x = layout[0].x + name_prefix.len() as u16 + form.goal_name.cursor as u16;
+                let cursor_x =
+                    layout[0].x + name_prefix.len() as u16 + form.goal_name.cursor as u16;
                 let cursor_y = layout[0].y;
                 f.set_cursor(cursor_x, cursor_y);
             }
@@ -123,7 +122,6 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
     }
 }
 
-
 fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
     if let Mode::DurationInput { ref goal_name, .. } = state.mode {
         // Height 4: Border(1) + Input(1) + Help(1) + Border(1)
@@ -131,7 +129,7 @@ fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         f.render_widget(ratatui::widgets::Clear, area);
 
         let title = format!("Duration for {} (e.g., 30m, 1h)", goal_name);
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -155,7 +153,7 @@ fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         f.render_widget(
             Paragraph::new("Enter: start • Esc: cancel")
                 .style(Style::default().fg(Color::DarkGray)),
-             layout[1]
+            layout[1],
         );
 
         let cursor_x = inner.x + 2 + state.duration_input.cursor as u16;
@@ -163,10 +161,6 @@ fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         f.set_cursor(cursor_x, cursor_y);
     }
 }
-
-
-
-
 
 fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
     if let Mode::QuantityDoneInput {
@@ -205,7 +199,7 @@ fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         f.render_widget(
             Paragraph::new("Enter: confirm • Esc: skip")
                 .style(Style::default().fg(Color::DarkGray)),
-            layout[1]
+            layout[1],
         );
 
         let cursor_x = inner.x + 2 + state.quantity_input.cursor as u16;
@@ -213,10 +207,6 @@ fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         f.set_cursor(cursor_x, cursor_y);
     }
 }
-
-
-
-
 
 fn kind_label(kind: SessionKind) -> &'static str {
     match kind {
@@ -279,7 +269,6 @@ fn centered_rect_fixed_height(
         ])
         .split(popup_layout[1])[1]
 }
-
 
 /// Returns a centered rect of fixed size (width, height) within the parent rect
 #[allow(dead_code)]
@@ -440,7 +429,6 @@ impl TextInput {
         self.cursor = idx;
     }
 
-
     fn move_word_right(&mut self) {
         let chars: Vec<char> = self.value.chars().collect();
         let len = chars.len();
@@ -464,7 +452,6 @@ impl TextInput {
         self.cursor = 0;
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliConfig {
@@ -507,7 +494,6 @@ struct FormState {
     is_reward: bool,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum FocusedBlock {
     #[default]
@@ -526,7 +512,6 @@ fn is_dialog_open(mode: &Mode) -> bool {
     )
 }
 
-
 fn get_block_style(current: FocusedBlock, target: FocusedBlock, mode: &Mode) -> Style {
     if !is_dialog_open(mode) && current == target {
         Style::default().fg(Color::Blue)
@@ -542,8 +527,6 @@ fn get_dimmed_style(mode: &Mode) -> Style {
         Style::default()
     }
 }
-
-
 
 fn get_cursor_style(mode: &Mode) -> SetCursorStyle {
     match mode {
@@ -591,7 +574,6 @@ struct AppState {
     focused_block: FocusedBlock,
     form_state: Option<FormState>,
 }
-
 
 #[derive(Debug)]
 struct TimerState {
@@ -657,7 +639,6 @@ fn main() -> Result<()> {
 
     // Start focused on the most recent item (last in list) if any exist.
     state.selected = build_view_items(&state, 20).len().saturating_sub(1);
-
 
     refresh_notes_for_selection(&mut state)?;
 
@@ -747,9 +728,6 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
         .title(prompt)
         .border_style(Style::default().fg(Color::Blue));
 
-
-
-
     let inner = popup_block.inner(popup_area);
     f.render_widget(popup_block, popup_area);
 
@@ -761,7 +739,6 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
             Constraint::Length(1), // Help
         ])
         .split(inner);
-
 
     let input_line = format!("> {}", state.search_input.value);
     let input_para = Paragraph::new(input_line.clone());
@@ -789,9 +766,8 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
     f.render_widget(
         Paragraph::new("Type to search • ↑↓ select • Enter pick • Esc cancel")
             .style(Style::default().fg(Color::DarkGray)),
-         dialog_chunks[2]
+        dialog_chunks[2],
     );
-
 
     let cursor_x = dialog_chunks[0].x + 2 + state.search_input.cursor as u16;
     let cursor_y = dialog_chunks[0].y;
@@ -801,9 +777,6 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
     );
 }
 
-
-
-
 fn ui(f: &mut ratatui::Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -812,7 +785,6 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             Constraint::Min(5),    // Body
         ])
         .split(f.size());
-
 
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -862,32 +834,34 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         .map(|(i, item)| {
             let is_selected = i == state.selected;
             let is_dialog_open = is_dialog_open(&state.mode);
-            
-            // Highlight selected item even if dialog is open (as requested), 
+
+            // Highlight selected item even if dialog is open (as requested),
             // but the list itself might be dimmed. Explicit style overrides list style.
             // Also highlight ALL timer items if ANY timer item is selected.
             // Also highlight the [Insert] line if we are in QuantityDoneInput mode.
             let is_quantity_input = matches!(state.mode, Mode::QuantityDoneInput { .. });
-            let is_insert_item = matches!(item.kind, ViewItemKind::AddSession | ViewItemKind::AddReward);
-            
-            let should_highlight = is_selected 
+            let is_insert_item = matches!(
+                item.kind,
+                ViewItemKind::AddSession | ViewItemKind::AddReward
+            );
+
+            let should_highlight = is_selected
                 || (is_any_timer_selected && item.kind == ViewItemKind::RunningTimer)
                 || (is_quantity_input && is_insert_item);
-            
+
             let label_style = if should_highlight {
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
 
-
             let mut spans = vec![Span::styled(item.label.clone(), label_style)];
 
             if is_selected && !is_dialog_open {
-
                 match item.kind {
                     ViewItemKind::AddSession => {
-
                         spans.push(Span::styled(
                             " (Enter: add session)",
                             Style::default().fg(Color::DarkGray),
@@ -900,22 +874,19 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
                         ));
                     }
                     ViewItemKind::Existing(_, _) => {
-                         if state.focused_block == FocusedBlock::SessionsList {
-                             spans.push(Span::styled(
+                        if state.focused_block == FocusedBlock::SessionsList {
+                            spans.push(Span::styled(
                                 " (e: edit, E: external edit)",
                                 Style::default().fg(Color::DarkGray),
                             ));
-                         }
+                        }
                     }
 
                     _ => {}
-
                 }
             }
             ListItem::new(Line::from(spans))
         })
-
-
         .collect();
     let title = format!(
         "Sessions of {} (←→ day • ↑↓ move)",
@@ -932,10 +903,7 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             &state.mode,
         ));
 
-    let list = List::new(list_items)
-        .block(sessions_block)
-        .style(dimmed);
-
+    let list = List::new(list_items).block(sessions_block).style(dimmed);
 
     let mut stateful = ratatui::widgets::ListState::default();
     if !items.is_empty() {
@@ -959,8 +927,6 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             &state.mode,
         ));
 
-
-
     if selected_goal_id(state).is_some() {
         let (cursor_line, cursor_col) = notes_cursor_line_col(state);
         let view_height = body_chunks[1].height.max(1) as usize;
@@ -972,7 +938,6 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             .style(dimmed)
             .scroll((offset_u16, 0));
         f.render_widget(notes_para, body_chunks[1]);
-
 
         if matches!(state.mode, Mode::NotesEdit) {
             let visible_line = cursor_line
@@ -989,7 +954,6 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             .style(dimmed);
         f.render_widget(notes_para, body_chunks[1]);
     }
-
 
     render_goal_selector_dialog(f, state);
     render_goal_form_dialog(f, state);
@@ -1033,9 +997,9 @@ fn build_timer_view_items(timer: &TimerState, width: usize) -> Vec<ViewItem> {
         1.0 - (timer.remaining as f32 / timer.total as f32)
     };
     let ratio = pct.clamp(0.0, 1.0);
-    
+
     // Ensure width is at least something reasonable to avoid panic or weirdness
-    let bar_width = width.max(1); 
+    let bar_width = width.max(1);
     let filled = (ratio * bar_width as f32) as usize;
     let empty = bar_width.saturating_sub(filled);
     let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
@@ -1048,9 +1012,7 @@ fn build_timer_view_items(timer: &TimerState, width: usize) -> Vec<ViewItem> {
     vec![info_item, bar_item]
 }
 
-
 fn build_view_items(state: &AppState, width: usize) -> Vec<ViewItem> {
-
     let mut items = Vec::new();
     for (idx, n) in state.nodes.iter().enumerate() {
         let prefix = match n.kind {
@@ -1109,7 +1071,6 @@ fn build_view_items(state: &AppState, width: usize) -> Vec<ViewItem> {
     }
     items
 }
-
 
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
@@ -1198,7 +1159,6 @@ fn handle_form_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     }
     Ok(false)
 }
-
 
 fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     match key.code {
@@ -1381,7 +1341,6 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     Ok(false)
 }
 
-
 fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     let Mode::QuantityDoneInput { .. } = state.mode else {
         return Ok(false);
@@ -1392,7 +1351,6 @@ fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool>
     }
 
     match key.code {
-
         KeyCode::Esc => {
             state.quantity_input.clear();
             if let Some(pending) = state.pending_session.take() {
@@ -1414,8 +1372,6 @@ fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool>
 
     Ok(false)
 }
-
-
 
 fn handle_duration_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     if state.duration_input.handle_key(key) {
@@ -1442,7 +1398,6 @@ fn handle_duration_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     }
     Ok(false)
 }
-
 
 fn handle_timer_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     // Allow all navigation and editing actions during timer, just not starting new sessions
@@ -2283,7 +2238,6 @@ fn format_day_label(day: NaiveDate) -> String {
         format!("{base}, -{diff}d")
     }
 }
-
 
 fn format_duration_suggestion(duration_mins: i64) -> String {
     if duration_mins == 0 {
