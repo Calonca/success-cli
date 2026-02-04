@@ -19,8 +19,9 @@ use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
+use ratatui::text::{Line, Span};
+
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use successlib::{
@@ -37,51 +38,185 @@ const FILE_MANAGER_COMMAND: &str = "xdg-open";
 
 const DEFAULT_EDITOR: &str = "nvim";
 
-fn render_timer_footer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, timer: &TimerState) {
-    let pct = if timer.total == 0 {
-        0.0
-    } else {
-        1.0 - (timer.remaining as f32 / timer.total as f32)
-    };
-    let ratio = pct.clamp(0.0, 1.0) as f64;
-    let block = Block::default().borders(Borders::ALL).title(format!(
-        "{} timer",
-        if timer.is_reward { "Reward" } else { "Session" }
-    ));
+fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
+    if let Some(form) = &state.form_state {
+        let area = centered_rect(80, 70, f.size());
+        f.render_widget(ratatui::widgets::Clear, area);
 
-    // Draw border first, then split inner area for text and the gauge bar
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+        let title = if form.is_reward {
+            "Create new reward"
+        } else {
+            "Create new goal"
+        };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(inner);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Blue));
 
-    let para = Paragraph::new(Line::from(format!(
-        "{} | Remaining: {}s | Total: {}s | Started: {}",
-        timer.label,
-        timer.remaining,
-        timer.total,
-        timer.started_at.with_timezone(&Local).format("%H:%M"),
-    )));
-    f.render_widget(para, chunks[0]);
 
-    let gauge_label = format!(
-        "{:.0}% • Remaining: {}s • Total: {}s • Started: {}",
-        ratio * 100.0,
-        timer.remaining,
-        timer.total,
-        timer.started_at.with_timezone(&Local).format("%H:%M"),
-    );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-    let gauge = Gauge::default()
-        .ratio(ratio)
-        .gauge_style(Style::default().fg(Color::Rgb(0, 130, 0)))
-        .use_unicode(true)
-        .label(gauge_label);
-    f.render_widget(gauge, chunks[1]);
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Goal Name
+                Constraint::Length(1), // Quantity
+                Constraint::Length(1), // Commands
+                Constraint::Length(1), // Spacer
+                Constraint::Min(1),    // Filler
+                Constraint::Length(1), // Help text
+            ])
+            .split(inner);
+
+        let name_prefix = "Name: ";
+        let name_style = if form.current_field == FormField::GoalName {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default()
+        };
+        let name_line = format!("{}{}", name_prefix, form.goal_name.value);
+        f.render_widget(Paragraph::new(name_line).style(name_style), layout[0]);
+
+        let qty_prefix = "Quantity name (optional): ";
+        let qty_style = if form.current_field == FormField::Quantity {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default()
+        };
+        let qty_line = format!("{}{}", qty_prefix, form.quantity_name.value);
+        f.render_widget(Paragraph::new(qty_line).style(qty_style), layout[1]);
+
+        let cmd_prefix = "Commands (optional, separated by ;): ";
+        let cmd_style = if form.current_field == FormField::Commands {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default()
+        };
+        let cmd_line = format!("{}{}", cmd_prefix, form.commands.value);
+        f.render_widget(Paragraph::new(cmd_line).style(cmd_style), layout[2]);
+
+        let help = Paragraph::new("↑↓/Tab: navigate • Enter: create • Esc: cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(help, layout[5]);
+
+
+        match form.current_field {
+            FormField::GoalName => {
+                let cursor_x = layout[0].x + name_prefix.len() as u16 + form.goal_name.cursor as u16;
+                let cursor_y = layout[0].y;
+                f.set_cursor(cursor_x, cursor_y);
+            }
+            FormField::Quantity => {
+                let cursor_x =
+                    layout[1].x + qty_prefix.len() as u16 + form.quantity_name.cursor as u16;
+                let cursor_y = layout[1].y;
+                f.set_cursor(cursor_x, cursor_y);
+            }
+            FormField::Commands => {
+                let cursor_x = layout[2].x + cmd_prefix.len() as u16 + form.commands.cursor as u16;
+                let cursor_y = layout[2].y;
+                f.set_cursor(cursor_x, cursor_y);
+            }
+        }
+    }
 }
+
+
+fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
+    if let Mode::DurationInput { ref goal_name, .. } = state.mode {
+        // Height 4: Border(1) + Input(1) + Help(1) + Border(1)
+        let area = centered_rect_fixed_height(60, 4, f.size());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let title = format!("Duration for {} (e.g., 30m, 1h)", goal_name);
+        
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Blue));
+
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Input
+                Constraint::Min(1),    // Help
+            ])
+            .split(inner);
+
+        let input_line = format!("> {}", state.duration_input.value);
+        f.render_widget(Paragraph::new(input_line.clone()), layout[0]);
+
+        // Help hint in last line of block
+        f.render_widget(
+            Paragraph::new("Enter: start • Esc: cancel")
+                .style(Style::default().fg(Color::DarkGray)),
+             layout[1]
+        );
+
+        let cursor_x = inner.x + 2 + state.duration_input.cursor as u16;
+        let cursor_y = inner.y;
+        f.set_cursor(cursor_x, cursor_y);
+    }
+}
+
+
+
+
+
+fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
+    if let Mode::QuantityDoneInput {
+        ref goal_name,
+        ref quantity_name,
+    } = state.mode
+    {
+        // Height 4 for consistent look
+        let area = centered_rect_fixed_height(60, 4, f.size());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let title = if let Some(name) = quantity_name {
+            format!("{} done for {} (blank to skip)", name, goal_name)
+        } else {
+            format!("Quantity done for {} (blank to skip)", goal_name)
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Blue));
+
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Input
+                Constraint::Min(1),    // Help
+            ])
+            .split(inner);
+
+        let input_line = format!("> {}", state.quantity_input.value);
+        f.render_widget(Paragraph::new(input_line.clone()), layout[0]);
+
+        f.render_widget(
+            Paragraph::new("Enter: confirm • Esc: skip")
+                .style(Style::default().fg(Color::DarkGray)),
+            layout[1]
+        );
+
+        let cursor_x = inner.x + 2 + state.quantity_input.cursor as u16;
+        let cursor_y = inner.y;
+        f.set_cursor(cursor_x, cursor_y);
+    }
+}
+
+
+
+
 
 fn kind_label(kind: SessionKind) -> &'static str {
     match kind {
@@ -89,6 +224,247 @@ fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::Reward => "reward",
     }
 }
+
+/// Returns a centered rect of the given percentage size within the parent rect
+fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    r: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    use ratatui::layout::{Constraint, Direction, Layout};
+
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn centered_rect_fixed_height(
+    percent_x: u16,
+    height: u16,
+    r: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    use ratatui::layout::{Constraint, Direction, Layout};
+
+    let vertical_pad = r.height.saturating_sub(height) / 2;
+
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(vertical_pad),
+            Constraint::Length(height),
+            Constraint::Length(vertical_pad),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+
+/// Returns a centered rect of fixed size (width, height) within the parent rect
+#[allow(dead_code)]
+fn centered_rect_fixed(width: u16, height: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    use ratatui::layout::{Constraint, Direction, Layout};
+
+    let vertical_padding = r.height.saturating_sub(height) / 2;
+    let horizontal_padding = r.width.saturating_sub(width) / 2;
+
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(vertical_padding),
+            Constraint::Length(height),
+            Constraint::Length(vertical_padding),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(horizontal_padding),
+            Constraint::Length(width),
+            Constraint::Length(horizontal_padding),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TextInput {
+    value: String,
+    cursor: usize,
+}
+
+impl TextInput {
+    fn new(value: String) -> Self {
+        let len = value.chars().count();
+        Self { value, cursor: len }
+    }
+
+    fn from_string(value: String) -> Self {
+        Self::new(value)
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.insert_char(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.delete_char_back();
+                true
+            }
+            KeyCode::Delete => {
+                self.delete_char_forward();
+                true
+            }
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.move_word_left();
+                } else {
+                    self.move_left();
+                }
+                true
+            }
+            KeyCode::Right => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.move_word_right();
+                } else {
+                    self.move_right();
+                }
+                true
+            }
+            KeyCode::Home => {
+                self.cursor = 0;
+                true
+            }
+            KeyCode::End => {
+                self.cursor = self.value.chars().count();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn insert_char(&mut self, c: char) {
+        if self.cursor >= self.value.chars().count() {
+            self.value.push(c);
+            self.cursor += 1;
+        } else {
+            let mut result = String::new();
+            for (i, ch) in self.value.chars().enumerate() {
+                if i == self.cursor {
+                    result.push(c);
+                }
+                result.push(ch);
+            }
+            self.value = result;
+            self.cursor += 1;
+        }
+    }
+
+    fn delete_char_back(&mut self) {
+        if self.cursor > 0 {
+            let mut result = String::new();
+            for (i, ch) in self.value.chars().enumerate() {
+                if i != self.cursor - 1 {
+                    result.push(ch);
+                }
+            }
+            self.value = result;
+            self.cursor -= 1;
+        }
+    }
+
+    fn delete_char_forward(&mut self) {
+        if self.cursor < self.value.chars().count() {
+            let mut result = String::new();
+            for (i, ch) in self.value.chars().enumerate() {
+                if i != self.cursor {
+                    result.push(ch);
+                }
+            }
+            self.value = result;
+        }
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor < self.value.chars().count() {
+            self.cursor += 1;
+        }
+    }
+
+    fn move_word_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let chars: Vec<char> = self.value.chars().collect();
+        let mut idx = self.cursor;
+        // Skip current non-separators if we are at the end of a word?
+        // Simple logic: skip spaces backwards, then skip non-spaces backwards
+        while idx > 0 && idx <= chars.len() && chars[idx - 1].is_whitespace() {
+            idx -= 1;
+        }
+        while idx > 0 && idx <= chars.len() && !chars[idx - 1].is_whitespace() {
+            idx -= 1;
+        }
+        self.cursor = idx;
+    }
+
+
+    fn move_word_right(&mut self) {
+        let chars: Vec<char> = self.value.chars().collect();
+        let len = chars.len();
+        if self.cursor >= len {
+            return;
+        }
+        let mut idx = self.cursor;
+        // Skip current non-separators
+        while idx < len && !chars[idx].is_whitespace() {
+            idx += 1;
+        }
+        // Skip spaces
+        while idx < len && chars[idx].is_whitespace() {
+            idx += 1;
+        }
+        self.cursor = idx;
+    }
+
+    fn clear(&mut self) {
+        self.value.clear();
+        self.cursor = 0;
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliConfig {
@@ -100,17 +476,7 @@ enum Mode {
     View,
     AddSession,
     AddReward,
-    CommandInput {
-        goal_name: String,
-        is_reward: bool,
-        input: String,
-    },
-    QuantityNameInput {
-        goal_name: String,
-        is_reward: bool,
-        commands: Vec<String>,
-        input: String,
-    },
+    GoalForm,
     QuantityDoneInput {
         goal_name: String,
         quantity_name: Option<String>,
@@ -124,13 +490,79 @@ enum Mode {
     NotesEdit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FormField {
+    #[default]
+    GoalName,
+    Quantity,
+    Commands,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FormState {
+    current_field: FormField,
+    goal_name: TextInput,
+    quantity_name: TextInput,
+    commands: TextInput,
+    is_reward: bool,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FocusedBlock {
+    #[default]
+    SessionsList,
+    Notes,
+}
+
+fn is_dialog_open(mode: &Mode) -> bool {
+    matches!(
+        mode,
+        Mode::AddSession
+            | Mode::AddReward
+            | Mode::GoalForm
+            | Mode::QuantityDoneInput { .. }
+            | Mode::DurationInput { .. }
+    )
+}
+
+
+fn get_block_style(current: FocusedBlock, target: FocusedBlock, mode: &Mode) -> Style {
+    if !is_dialog_open(mode) && current == target {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default()
+    }
+}
+
+fn get_dimmed_style(mode: &Mode) -> Style {
+    if is_dialog_open(mode) {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+    }
+}
+
+
+
+fn get_cursor_style(mode: &Mode) -> SetCursorStyle {
+    match mode {
+        Mode::NotesEdit
+        | Mode::AddSession
+        | Mode::AddReward
+        | Mode::GoalForm
+        | Mode::QuantityDoneInput { .. }
+        | Mode::DurationInput { .. } => SetCursorStyle::SteadyBlock,
+        Mode::View | Mode::Timer => SetCursorStyle::SteadyBlock,
+    }
+}
+
 fn format_mode(mode: &Mode) -> &'static str {
     match mode {
         Mode::View => "view",
         Mode::AddSession => "add-session",
         Mode::AddReward => "add-reward",
-        Mode::CommandInput { .. } => "commands",
-        Mode::QuantityNameInput { .. } => "quantity-name",
+        Mode::GoalForm => "goal-form",
         Mode::QuantityDoneInput { .. } => "quantity-done",
         Mode::DurationInput { .. } => "duration",
         Mode::Timer => "timer",
@@ -146,17 +578,20 @@ struct AppState {
     current_day: NaiveDate,
     selected: usize,
     mode: Mode,
-    search_input: String,
+    search_input: TextInput,
     search_selected: usize,
-    duration_input: String,
-    quantity_input: String,
+    duration_input: TextInput,
+    quantity_input: TextInput,
     timer: Option<TimerState>,
     pending_session: Option<PendingSession>,
     notes: String,
     notes_cursor: usize,
     status: Option<String>,
     needs_full_redraw: bool,
+    focused_block: FocusedBlock,
+    form_state: Option<FormState>,
 }
+
 
 #[derive(Debug)]
 struct TimerState {
@@ -205,20 +640,24 @@ fn main() -> Result<()> {
         current_day: today,
         selected: 0,
         mode: Mode::View,
-        search_input: String::new(),
+        search_input: TextInput::default(),
         search_selected: 0,
-        duration_input: String::new(),
-        quantity_input: String::new(),
+        duration_input: TextInput::default(),
+        quantity_input: TextInput::default(),
         timer: None,
+
         pending_session: None,
         notes: String::new(),
         notes_cursor: 0,
         status: None,
         needs_full_redraw: false,
+        focused_block: FocusedBlock::SessionsList,
+        form_state: None,
     };
 
     // Start focused on the most recent item (last in list) if any exist.
-    state.selected = build_view_items(&state).len().saturating_sub(1);
+    state.selected = build_view_items(&state, 20).len().saturating_sub(1);
+
 
     refresh_notes_for_selection(&mut state)?;
 
@@ -233,7 +672,7 @@ fn main() -> Result<()> {
         stdout,
         terminal::EnterAlternateScreen,
         event::EnableMouseCapture,
-        SetCursorStyle::SteadyBar
+        SetCursorStyle::SteadyBlock
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -244,7 +683,8 @@ fn main() -> Result<()> {
     execute!(
         terminal.backend_mut(),
         terminal::LeaveAlternateScreen,
-        event::DisableMouseCapture
+        event::DisableMouseCapture,
+        SetCursorStyle::DefaultUserShape
     )?;
     terminal.show_cursor()?;
 
@@ -254,7 +694,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app<B: ratatui::backend::Backend>(
+fn run_app<B: ratatui::backend::Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
 ) -> Result<()> {
@@ -268,6 +708,7 @@ fn run_app<B: ratatui::backend::Backend>(
         }
 
         terminal.draw(|f| ui(f, state))?;
+        execute!(terminal.backend_mut(), get_cursor_style(&state.mode))?;
 
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
@@ -287,16 +728,91 @@ fn run_app<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
+    if !matches!(state.mode, Mode::AddSession | Mode::AddReward) {
+        return;
+    }
+
+    let popup_area = centered_rect(80, 70, f.size());
+    f.render_widget(ratatui::widgets::Clear, popup_area);
+
+    let prompt = if matches!(state.mode, Mode::AddReward) {
+        "Choose reward"
+    } else {
+        "Choose goal"
+    };
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .title(prompt)
+        .border_style(Style::default().fg(Color::Blue));
+
+
+
+
+    let inner = popup_block.inner(popup_area);
+    f.render_widget(popup_block, popup_area);
+
+    let dialog_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Input
+            Constraint::Min(1),    // List
+            Constraint::Length(1), // Help
+        ])
+        .split(inner);
+
+
+    let input_line = format!("> {}", state.search_input.value);
+    let input_para = Paragraph::new(input_line.clone());
+    f.render_widget(input_para, dialog_chunks[0]);
+
+    let results = search_results(state);
+    let list_items: Vec<ListItem> = results
+        .iter()
+        .map(|(label, _)| ListItem::new(Line::from(label.clone())))
+        .collect();
+
+    let mut list_state = ListState::default();
+    if !results.is_empty() {
+        list_state.select(Some(state.search_selected.min(results.len() - 1)));
+    }
+
+    let list = List::new(list_items).highlight_style(
+        Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    f.render_stateful_widget(list, dialog_chunks[1], &mut list_state);
+
+    f.render_widget(
+        Paragraph::new("Type to search • ↑↓ select • Enter pick • Esc cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+         dialog_chunks[2]
+    );
+
+
+    let cursor_x = dialog_chunks[0].x + 2 + state.search_input.cursor as u16;
+    let cursor_y = dialog_chunks[0].y;
+    f.set_cursor(
+        cursor_x.min(dialog_chunks[0].x + dialog_chunks[0].width.saturating_sub(1)),
+        cursor_y,
+    );
+}
+
+
+
+
 fn ui(f: &mut ratatui::Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(7),
+            Constraint::Length(3), // Header
+            Constraint::Min(5),    // Body
         ])
         .split(f.size());
+
 
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -318,23 +834,109 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         header_line.push_str(&format!(" | {status}"));
     }
 
+    let dimmed = get_dimmed_style(&state.mode);
+
     let header = Paragraph::new(header_line)
-        .block(Block::default().borders(Borders::ALL).title("Success CLI"));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Success CLI")
+                .style(dimmed),
+        )
+        .style(dimmed);
+
     f.render_widget(header, chunks[0]);
 
-    let items = build_view_items(state);
+    let list_width = body_chunks[0].width.saturating_sub(4) as usize;
+
+    let items = build_view_items(state, list_width);
+
+    let is_any_timer_selected = items
+        .get(state.selected)
+        .map(|it| it.kind == ViewItemKind::RunningTimer)
+        .unwrap_or(false);
+
     let list_items: Vec<ListItem> = items
         .iter()
-        .map(|item| ListItem::new(Line::from(item.label.clone())))
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == state.selected;
+            let is_dialog_open = is_dialog_open(&state.mode);
+            
+            // Highlight selected item even if dialog is open (as requested), 
+            // but the list itself might be dimmed. Explicit style overrides list style.
+            // Also highlight ALL timer items if ANY timer item is selected.
+            // Also highlight the [Insert] line if we are in QuantityDoneInput mode.
+            let is_quantity_input = matches!(state.mode, Mode::QuantityDoneInput { .. });
+            let is_insert_item = matches!(item.kind, ViewItemKind::AddSession | ViewItemKind::AddReward);
+            
+            let should_highlight = is_selected 
+                || (is_any_timer_selected && item.kind == ViewItemKind::RunningTimer)
+                || (is_quantity_input && is_insert_item);
+            
+            let label_style = if should_highlight {
+                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+
+            let mut spans = vec![Span::styled(item.label.clone(), label_style)];
+
+            if is_selected && !is_dialog_open {
+
+                match item.kind {
+                    ViewItemKind::AddSession => {
+
+                        spans.push(Span::styled(
+                            " (Enter: add session)",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    ViewItemKind::AddReward => {
+                        spans.push(Span::styled(
+                            " (Enter: receive reward)",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    ViewItemKind::Existing(_, _) => {
+                         if state.focused_block == FocusedBlock::SessionsList {
+                             spans.push(Span::styled(
+                                " (e: edit, E: external edit)",
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                         }
+                    }
+
+                    _ => {}
+
+                }
+            }
+            ListItem::new(Line::from(spans))
+        })
+
+
         .collect();
-    let title = format!("Sessions of {}", format_day_label(state.current_day));
+    let title = format!(
+        "Sessions of {} (←→ day • ↑↓ move)",
+        format_day_label(state.current_day)
+    );
+
+    let sessions_block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(dimmed)
+        .border_style(get_block_style(
+            state.focused_block,
+            FocusedBlock::SessionsList,
+            &state.mode,
+        ));
+
     let list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        .block(sessions_block)
+        .style(dimmed);
+
+
     let mut stateful = ratatui::widgets::ListState::default();
     if !items.is_empty() {
         stateful.select(Some(state.selected.min(items.len() - 1)));
@@ -344,9 +946,20 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
     let notes_title = if matches!(state.mode, Mode::NotesEdit) {
         "Notes (Esc to stop editing)"
     } else {
-        "Notes (press 'e' to edit, 'E' for external editor)"
+        "Notes"
     };
-    let notes_block = Block::default().borders(Borders::ALL).title(notes_title);
+
+    let notes_block = Block::default()
+        .borders(Borders::ALL)
+        .title(notes_title)
+        .style(dimmed)
+        .border_style(get_block_style(
+            state.focused_block,
+            FocusedBlock::Notes,
+            &state.mode,
+        ));
+
+
 
     if selected_goal_id(state).is_some() {
         let (cursor_line, cursor_col) = notes_cursor_line_col(state);
@@ -356,8 +969,10 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         let offset_u16 = offset.min(u16::MAX as usize) as u16;
         let notes_para = Paragraph::new(state.notes.clone())
             .block(notes_block)
+            .style(dimmed)
             .scroll((offset_u16, 0));
         f.render_widget(notes_para, body_chunks[1]);
+
 
         if matches!(state.mode, Mode::NotesEdit) {
             let visible_line = cursor_line
@@ -369,128 +984,17 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
             f.set_cursor(cursor_x + 1, cursor_y + 1);
         }
     } else {
-        let notes_para = Paragraph::new("Select a task to view notes").block(notes_block);
+        let notes_para = Paragraph::new("Select a task to view notes")
+            .block(notes_block)
+            .style(dimmed);
         f.render_widget(notes_para, body_chunks[1]);
     }
 
-    let mut footer_constraints = Vec::new();
-    if state.timer.is_some() {
-        // Give the timer footer enough height for text + the bar line inside a bordered block
-        footer_constraints.push(Constraint::Length(4));
-    }
-    footer_constraints.push(Constraint::Min(4));
 
-    let footer_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(footer_constraints)
-        .split(chunks[2]);
-    let mut footer_idx = 0;
-    if let Some(timer) = &state.timer {
-        render_timer_footer(f, footer_chunks[footer_idx], timer);
-        footer_idx += 1;
-    }
-    let footer_area = footer_chunks[footer_idx];
-
-    match state.mode {
-        Mode::AddSession | Mode::AddReward => {
-            let prompt = if matches!(state.mode, Mode::AddReward) {
-                "Choose reward (type to search, Enter to pick, Esc to cancel)"
-            } else {
-                "Choose goal (type to search, Enter to pick, Esc to cancel)"
-            };
-
-            let search_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(1)])
-                .split(footer_area);
-
-            let input_line = format!("> {}", state.search_input);
-            let input_para = Paragraph::new(input_line.clone());
-            f.render_widget(input_para, search_layout[0]);
-
-            let results = search_results(state);
-            let list_items: Vec<ListItem> = results
-                .iter()
-                .map(|(label, _)| ListItem::new(Line::from(label.clone())))
-                .collect();
-            let mut list_state = ListState::default();
-            if !results.is_empty() {
-                list_state.select(Some(state.search_selected.min(results.len() - 1)));
-            }
-            let list = List::new(list_items)
-                .block(Block::default().borders(Borders::ALL).title(prompt))
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                );
-            f.render_stateful_widget(list, search_layout[1], &mut list_state);
-
-            // Place cursor at end of search input
-            let cursor_x = search_layout[0].x + 2 + state.search_input.len() as u16;
-            let cursor_y = search_layout[0].y;
-            f.set_cursor(
-                cursor_x.min(search_layout[0].x + search_layout[0].width.saturating_sub(1)),
-                cursor_y,
-            );
-        }
-        Mode::DurationInput { ref goal_name, .. } => {
-            let title = format!("Duration for {goal_name} (e.g., 30m, 1h)");
-            let block = Block::default().borders(Borders::ALL).title(title);
-            let para = Paragraph::new(state.duration_input.clone()).block(block);
-            f.render_widget(para, footer_area);
-        }
-        Mode::CommandInput {
-            ref goal_name,
-            ref input,
-            ..
-        } => {
-            let title = format!(
-                "Commands for {} (separate with ';', Enter to continue)",
-                goal_name
-            );
-            let block = Block::default().borders(Borders::ALL).title(title);
-            let para = Paragraph::new(input.clone()).block(block);
-            f.render_widget(para, footer_area);
-        }
-        Mode::QuantityNameInput {
-            ref goal_name,
-            ref input,
-            ..
-        } => {
-            let title = format!("Quantity name for {goal_name} (e.g., pages, reps). Blank to skip");
-            let block = Block::default().borders(Borders::ALL).title(title);
-            let para = Paragraph::new(input.clone()).block(block);
-            f.render_widget(para, footer_area);
-        }
-        Mode::QuantityDoneInput {
-            ref goal_name,
-            ref quantity_name,
-        } => {
-            let title = if let Some(name) = quantity_name {
-                format!("{name} done for {goal_name} (blank to skip)")
-            } else {
-                format!("Quantity done for {goal_name} (blank to skip)")
-            };
-            let block = Block::default().borders(Borders::ALL).title(title);
-            let para = Paragraph::new(state.quantity_input.clone()).block(block);
-            f.render_widget(para, footer_area);
-        }
-        Mode::Timer => {
-            let help = Paragraph::new(
-                "Timer running • Up/Down/Left/Right navigate • 'e' edit notes • Finish before starting another",
-            )
-            .block(Block::default().borders(Borders::ALL));
-            f.render_widget(help, footer_area);
-        }
-        Mode::View | Mode::NotesEdit => {
-            let help = Paragraph::new(
-                "Up/Down move • Left/Right change day • Enter to add/select • q to quit | Add goal/reward with Enter on [+] rows | 'e' to edit notes, Esc to exit notes",
-            )
-            .block(Block::default().borders(Borders::ALL));
-            f.render_widget(help, footer_area);
-        }
-    }
+    render_goal_selector_dialog(f, state);
+    render_goal_form_dialog(f, state);
+    render_duration_input_dialog(f, state);
+    render_quantity_input_dialog(f, state);
 }
 
 #[derive(Debug, Clone)]
@@ -513,7 +1017,40 @@ enum ViewItemKind {
     AddReward,
 }
 
-fn build_view_items(state: &AppState) -> Vec<ViewItem> {
+fn build_timer_view_items(timer: &TimerState, width: usize) -> Vec<ViewItem> {
+    let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
+    let info_item = ViewItem {
+        label: format!(
+            "[*] Running: {} ({}s left) [started {}]",
+            timer.label, timer.remaining, started_local
+        ),
+        kind: ViewItemKind::RunningTimer,
+    };
+
+    let pct = if timer.total == 0 {
+        0.0
+    } else {
+        1.0 - (timer.remaining as f32 / timer.total as f32)
+    };
+    let ratio = pct.clamp(0.0, 1.0);
+    
+    // Ensure width is at least something reasonable to avoid panic or weirdness
+    let bar_width = width.max(1); 
+    let filled = (ratio * bar_width as f32) as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+
+    let bar_item = ViewItem {
+        label: bar,
+        kind: ViewItemKind::RunningTimer,
+    };
+
+    vec![info_item, bar_item]
+}
+
+
+fn build_view_items(state: &AppState, width: usize) -> Vec<ViewItem> {
+
     let mut items = Vec::new();
     for (idx, n) in state.nodes.iter().enumerate() {
         let prefix = match n.kind {
@@ -537,19 +1074,23 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
     // Only show the running timer if we're viewing today.
     if let Some(timer) = &state.timer {
         if state.current_day == Local::now().date_naive() {
-            let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
-            items.push(ViewItem {
-                label: format!(
-                    "[*] Running: {} ({}s left) [started {started_local}]",
-                    timer.label, timer.remaining
-                ),
-                kind: ViewItemKind::RunningTimer,
-            });
+            items.extend(build_timer_view_items(timer, width));
         }
     }
+
     // Only offer add rows when no timer is running AND we are viewing today.
     if state.timer.is_none() && state.current_day == Local::now().date_naive() {
-        if state
+        if let Mode::QuantityDoneInput {
+            ref goal_name,
+            ref quantity_name,
+        } = state.mode
+        {
+            let quantity_name = quantity_name.as_deref().unwrap_or("quantity");
+            items.push(ViewItem {
+                label: format!("[+] Insert {quantity_name} for {goal_name}"),
+                kind: ViewItemKind::AddSession,
+            });
+        } else if state
             .nodes
             .last()
             .map(|n| n.kind == SessionKind::Goal)
@@ -560,24 +1101,15 @@ fn build_view_items(state: &AppState) -> Vec<ViewItem> {
                 kind: ViewItemKind::AddReward,
             });
         } else {
-            let add_label = if let Mode::QuantityDoneInput {
-                ref goal_name,
-                ref quantity_name,
-            } = state.mode
-            {
-                let quantity_name = quantity_name.as_deref().unwrap_or("quantity");
-                format!("[+] Insert {quantity_name} for {goal_name}")
-            } else {
-                "[+] Work on new goal".to_string()
-            };
             items.push(ViewItem {
-                label: add_label,
+                label: "[+] Work on new goal".to_string(),
                 kind: ViewItemKind::AddSession,
             });
         }
     }
     items
 }
+
 
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
@@ -586,14 +1118,87 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     match state.mode {
         Mode::View => handle_view_key(state, key),
         Mode::AddSession | Mode::AddReward => handle_search_key(state, key),
-        Mode::CommandInput { .. } => handle_command_key(state, key),
-        Mode::QuantityNameInput { .. } => handle_quantity_name_key(state, key),
+        Mode::GoalForm => handle_form_key(state, key),
         Mode::QuantityDoneInput { .. } => handle_quantity_done_key(state, key),
         Mode::DurationInput { .. } => handle_duration_key(state, key),
         Mode::Timer => handle_timer_key(state, key),
         Mode::NotesEdit => handle_notes_key(state, key),
     }
 }
+
+fn handle_form_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    let Some(form) = state.form_state.as_mut() else {
+        state.mode = Mode::View;
+        return Ok(false);
+    };
+
+    let field = match form.current_field {
+        FormField::GoalName => &mut form.goal_name,
+        FormField::Quantity => &mut form.quantity_name,
+        FormField::Commands => &mut form.commands,
+    };
+
+    if field.handle_key(key) {
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            state.form_state = None;
+            state.mode = Mode::View;
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            form.current_field = match form.current_field {
+                FormField::GoalName => FormField::Commands,
+                FormField::Quantity => FormField::GoalName,
+                FormField::Commands => FormField::Quantity,
+            };
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            form.current_field = match form.current_field {
+                FormField::GoalName => FormField::Quantity,
+                FormField::Quantity => FormField::Commands,
+                FormField::Commands => FormField::GoalName,
+            };
+        }
+        KeyCode::Enter => {
+            let name = form.goal_name.value.trim();
+            if name.is_empty() {
+                state.status = Some("Goal name cannot be empty".to_string());
+                return Ok(false);
+            }
+
+            let commands = parse_commands_input(&form.commands.value);
+            let quantity_name = if form.quantity_name.value.trim().is_empty() {
+                None
+            } else {
+                Some(form.quantity_name.value.trim().to_string())
+            };
+            let is_reward = form.is_reward;
+            let goal_name = name.to_string();
+
+            let created = add_goal(
+                &state.archive,
+                &goal_name,
+                is_reward,
+                commands,
+                quantity_name,
+            )?;
+            state.goals.push(created.clone());
+
+            state.form_state = None;
+            state.duration_input = TextInput::from_string("25m".to_string());
+            state.mode = Mode::DurationInput {
+                is_reward,
+                goal_name: created.name.clone(),
+                goal_id: created.id,
+            };
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 
 fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     match key.code {
@@ -612,7 +1217,7 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             shift_day(state, 1)?;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            let max_idx = build_view_items(state).len().saturating_sub(1);
+            let max_idx = build_view_items(state, 20).len().saturating_sub(1);
             let prev = state.selected;
             state.selected = state.selected.min(max_idx).saturating_add(1).min(max_idx);
             if state.selected != prev {
@@ -623,6 +1228,7 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             if selected_goal_id(state).is_some() {
                 refresh_notes_for_selection(state)?;
                 state.mode = Mode::NotesEdit;
+                state.focused_block = FocusedBlock::Notes;
             }
         }
         KeyCode::Char('E') => {
@@ -648,7 +1254,7 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             }
         },
         KeyCode::Enter => {
-            let items = build_view_items(state);
+            let items = build_view_items(state, 20);
             let Some(item) = items.get(state.selected) else {
                 return Ok(false);
             };
@@ -673,6 +1279,7 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                     state.search_input.clear();
                     state.search_selected = 0;
                 }
+
                 ViewItemKind::RunningTimer => {}
                 ViewItemKind::Existing(_, _) => {}
             }
@@ -701,13 +1308,17 @@ fn shift_day(state: &mut AppState, delta: i64) -> Result<()> {
 
     state.current_day = new_day;
     state.nodes = list_day_sessions(&state.archive, new_day)?;
-    state.selected = build_view_items(state).len().saturating_sub(1);
+    state.selected = build_view_items(state, 20).len().saturating_sub(1);
     refresh_notes_for_selection(state)?;
     state.status = Some(format!("Showing {}", format_day_label(new_day)));
     Ok(())
 }
 
 fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    if state.search_input.handle_key(key) {
+        state.search_selected = 0;
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Esc => {
             state.mode = Mode::View;
@@ -721,11 +1332,14 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 state.search_selected = 0;
                 match result {
                     SearchResult::Create { name, is_reward } => {
-                        state.mode = Mode::CommandInput {
-                            goal_name: name.clone(),
+                        state.form_state = Some(FormState {
+                            current_field: FormField::GoalName,
+                            goal_name: TextInput::from_string(name.clone()),
+                            quantity_name: TextInput::default(),
+                            commands: TextInput::default(),
                             is_reward: *is_reward,
-                            input: String::new(),
-                        };
+                        });
+                        state.mode = Mode::GoalForm;
                     }
                     SearchResult::Existing(goal) => {
                         let mut suggestion = None;
@@ -741,7 +1355,7 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                             }
                         }
                         let suggestion = suggestion.unwrap_or_else(|| "25m".to_string());
-                        state.duration_input = suggestion;
+                        state.duration_input = TextInput::from_string(suggestion);
                         state.mode = Mode::DurationInput {
                             is_reward: matches!(state.mode, Mode::AddReward),
                             goal_name: goal.name.clone(),
@@ -749,15 +1363,6 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                         };
                     }
                 }
-            }
-        }
-        KeyCode::Backspace => {
-            state.search_input.pop();
-            let len = search_results(state).len();
-            if len == 0 {
-                state.search_selected = 0;
-            } else {
-                state.search_selected = state.search_selected.min(len.saturating_sub(1));
             }
         }
         KeyCode::Up => {
@@ -771,121 +1376,23 @@ fn handle_search_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 state.search_selected = (state.search_selected + 1).min(len - 1);
             }
         }
-        KeyCode::Char(c) => {
-            if key.modifiers != KeyModifiers::CONTROL {
-                state.search_input.push(c);
-                let len = search_results(state).len();
-                state.search_selected = if len > 0 {
-                    state.search_selected.min(len - 1)
-                } else {
-                    0
-                };
-            }
-        }
         _ => {}
     }
     Ok(false)
 }
 
-fn handle_command_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
-    let Mode::CommandInput {
-        ref goal_name,
-        is_reward,
-        ref mut input,
-    } = state.mode
-    else {
-        return Ok(false);
-    };
-
-    match key.code {
-        KeyCode::Esc => {
-            input.clear();
-            state.mode = Mode::View;
-        }
-        KeyCode::Enter => {
-            let commands = parse_commands_input(input);
-            state.mode = Mode::QuantityNameInput {
-                goal_name: goal_name.clone(),
-                is_reward,
-                commands,
-                input: String::new(),
-            };
-        }
-        KeyCode::Backspace => {
-            input.pop();
-        }
-        KeyCode::Char(c) => {
-            if key.modifiers != KeyModifiers::CONTROL {
-                input.push(c);
-            }
-        }
-        _ => {}
-    }
-
-    Ok(false)
-}
-
-fn handle_quantity_name_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
-    let Mode::QuantityNameInput {
-        ref goal_name,
-        is_reward,
-        ref commands,
-        ref mut input,
-    } = state.mode
-    else {
-        return Ok(false);
-    };
-
-    match key.code {
-        KeyCode::Esc => {
-            input.clear();
-            state.mode = Mode::View;
-        }
-        KeyCode::Enter => {
-            let quantity_name = input.trim();
-            let quantity_name = if quantity_name.is_empty() {
-                None
-            } else {
-                Some(quantity_name.to_string())
-            };
-            let created = add_goal(
-                &state.archive,
-                goal_name,
-                is_reward,
-                commands.clone(),
-                quantity_name,
-            )?;
-            state.goals.push(created.clone());
-
-            state.duration_input = "25m".to_string();
-            let goal_name = created.name.clone();
-            let goal_id = created.id;
-            state.mode = Mode::DurationInput {
-                is_reward: created.is_reward,
-                goal_name,
-                goal_id,
-            };
-        }
-        KeyCode::Backspace => {
-            input.pop();
-        }
-        KeyCode::Char(c) => {
-            if key.modifiers != KeyModifiers::CONTROL {
-                input.push(c);
-            }
-        }
-        _ => {}
-    }
-
-    Ok(false)
-}
 
 fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     let Mode::QuantityDoneInput { .. } = state.mode else {
         return Ok(false);
     };
 
+    if state.quantity_input.handle_key(key) {
+        return Ok(false);
+    }
+
     match key.code {
+
         KeyCode::Esc => {
             state.quantity_input.clear();
             if let Some(pending) = state.pending_session.take() {
@@ -895,19 +1402,12 @@ fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool>
             }
         }
         KeyCode::Enter => {
-            let qty = parse_optional_u32(&state.quantity_input);
+            let qty = parse_optional_u32(&state.quantity_input.value);
+
             if let Some(pending) = state.pending_session.take() {
                 finalize_session(state, pending, qty);
             }
             state.quantity_input.clear();
-        }
-        KeyCode::Backspace => {
-            state.quantity_input.pop();
-        }
-        KeyCode::Char(c) => {
-            if key.modifiers != KeyModifiers::CONTROL {
-                state.quantity_input.push(c);
-            }
         }
         _ => {}
     }
@@ -915,7 +1415,12 @@ fn handle_quantity_done_key(state: &mut AppState, key: KeyEvent) -> Result<bool>
     Ok(false)
 }
 
+
+
 fn handle_duration_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
+    if state.duration_input.handle_key(key) {
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Esc => {
             state.duration_input.clear();
@@ -930,21 +1435,14 @@ fn handle_duration_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             else {
                 return Ok(false);
             };
-            let secs = parse_duration(&state.duration_input).unwrap_or(25 * 60);
+            let secs = parse_duration(&state.duration_input.value).unwrap_or(25 * 60);
             start_timer(state, goal_name.clone(), goal_id, secs as u32, is_reward)?;
-        }
-        KeyCode::Backspace => {
-            state.duration_input.pop();
-        }
-        KeyCode::Char(c) => {
-            if key.modifiers != KeyModifiers::CONTROL {
-                state.duration_input.push(c);
-            }
         }
         _ => {}
     }
     Ok(false)
 }
+
 
 fn handle_timer_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
     // Allow all navigation and editing actions during timer, just not starting new sessions
@@ -965,6 +1463,7 @@ fn handle_notes_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Esc => {
             save_notes_for_selection(state)?;
             state.mode = Mode::View;
+            state.focused_block = FocusedBlock::SessionsList;
         }
         KeyCode::Backspace => {
             if state.notes_cursor > 0 {
@@ -1082,7 +1581,7 @@ fn start_timer(
     if state.current_day != today {
         state.current_day = today;
         state.nodes = list_day_sessions(&state.archive, today)?;
-        state.selected = build_view_items(state).len().saturating_sub(1);
+        state.selected = build_view_items(state, 20).len().saturating_sub(1);
         refresh_notes_for_selection(state)?;
     }
 
@@ -1098,7 +1597,7 @@ fn start_timer(
         spawned,
         started_at,
     });
-    state.selected = build_view_items(state).len().saturating_sub(1);
+    state.selected = build_view_items(state, 20).len().saturating_sub(1);
     if let Err(e) = append_session_start_header(&state.archive, goal_id, started_at) {
         state.status = Some(format!("Failed to prepare notes: {e}"));
     }
@@ -1135,7 +1634,7 @@ fn finalize_session(state: &mut AppState, pending: PendingSession, quantity: Opt
         match list_day_sessions(&state.archive, timer_day) {
             Ok(nodes) => {
                 state.nodes = nodes;
-                let items = build_view_items(state);
+                let items = build_view_items(state, 20);
                 state.selected = items.len().saturating_sub(1);
                 if let Err(e) = refresh_notes_for_selection(state) {
                     eprintln!("Failed to load notes: {e}");
@@ -1170,7 +1669,8 @@ fn goal_quantity_name(state: &AppState, goal_id: u64) -> Option<String> {
 }
 
 fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
-    let q = state.search_input.trim();
+    let q = state.search_input.value.trim();
+
     let is_reward = matches!(state.mode, Mode::AddReward);
 
     // Use the library function which handles fuzzy matching and sorting by recent
@@ -1207,7 +1707,7 @@ fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
 }
 
 fn selected_goal_id(state: &AppState) -> Option<u64> {
-    let items = build_view_items(state);
+    let items = build_view_items(state, 20);
     match items.get(state.selected).map(|v| v.kind) {
         Some(ViewItemKind::RunningTimer) => state.timer.as_ref().map(|t| t.goal_id),
         Some(ViewItemKind::Existing(_, idx)) => state.nodes.get(idx).map(|n| n.goal_id),
@@ -1516,7 +2016,7 @@ where
             stdout,
             terminal::EnterAlternateScreen,
             event::EnableMouseCapture,
-            SetCursorStyle::SteadyBar,
+            SetCursorStyle::SteadyBlock,
             Clear(ClearType::All),
             MoveTo(0, 0)
         )?;
@@ -1778,11 +2278,12 @@ fn format_day_label(day: NaiveDate) -> String {
     let base = day.format("%Y-%m-%d").to_string();
     let diff = (today - day).num_days();
     if diff == 0 {
-        format!("{base} (today)")
+        format!("{base}, today")
     } else {
-        format!("{base} (-{diff}d)")
+        format!("{base}, -{diff}d")
     }
 }
+
 
 fn format_duration_suggestion(duration_mins: i64) -> String {
     if duration_mins == 0 {
