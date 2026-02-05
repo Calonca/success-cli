@@ -290,6 +290,56 @@ fn centered_rect_fixed(width: u16, height: u16, r: ratatui::layout::Rect) -> rat
         .split(popup_layout[1])[1]
 }
 
+/// Word-wrap a single line of text to fit within `width` characters.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            if word.chars().count() > width {
+                // Break a single long word across lines
+                let mut chars = word.chars();
+                while chars.as_str().chars().count() > 0 {
+                    let chunk: String = chars.by_ref().take(width).collect();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    lines.push(chunk);
+                }
+            } else {
+                current = word.to_string();
+            }
+        } else if current.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut current));
+            if word.chars().count() > width {
+                let mut chars = word.chars();
+                while chars.as_str().chars().count() > 0 {
+                    let chunk: String = chars.by_ref().take(width).collect();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    lines.push(chunk);
+                }
+            } else {
+                current = word.to_string();
+            }
+        } else {
+            current.push(' ');
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct TextInput {
     value: String,
@@ -822,11 +872,23 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
                 Style::default()
             };
 
-            // Split label by newlines to support multiline items
+            // Split label by newlines, then word-wrap each line to fit the list width
             let label_lines: Vec<&str> = item.label.lines().collect();
             let mut lines: Vec<Line> = label_lines
                 .iter()
-                .map(|line_text| Line::from(vec![Span::styled(line_text.to_string(), label_style)]))
+                .flat_map(|line_text| {
+                    wrap_text(line_text, list_width)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(wrap_idx, wrapped)| {
+                            let text = if wrap_idx == 0 {
+                                wrapped // First wrapped line, no indentation
+                            } else {
+                                format!("    {}", wrapped) // Continuation lines get 4 spaces
+                            };
+                            Line::from(vec![Span::styled(text, label_style)])
+                        })
+                })
                 .collect();
 
             // Add hints based on item type
