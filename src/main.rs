@@ -208,13 +208,6 @@ fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
     }
 }
 
-fn kind_label(kind: SessionKind) -> &'static str {
-    match kind {
-        SessionKind::Goal => "session",
-        SessionKind::Reward => "reward",
-    }
-}
-
 /// Returns a centered rect of the given percentage size within the parent rect
 fn centered_rect(
     percent_x: u16,
@@ -295,6 +288,56 @@ fn centered_rect_fixed(width: u16, height: u16, r: ratatui::layout::Rect) -> rat
             Constraint::Length(horizontal_padding),
         ])
         .split(popup_layout[1])[1]
+}
+
+/// Word-wrap a single line of text to fit within `width` characters.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            if word.chars().count() > width {
+                // Break a single long word across lines
+                let mut chars = word.chars();
+                while chars.as_str().chars().count() > 0 {
+                    let chunk: String = chars.by_ref().take(width).collect();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    lines.push(chunk);
+                }
+            } else {
+                current = word.to_string();
+            }
+        } else if current.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut current));
+            if word.chars().count() > width {
+                let mut chars = word.chars();
+                while chars.as_str().chars().count() > 0 {
+                    let chunk: String = chars.by_ref().take(width).collect();
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    lines.push(chunk);
+                }
+            } else {
+                current = word.to_string();
+            }
+        } else {
+            current.push(' ');
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -540,19 +583,6 @@ fn get_cursor_style(mode: &Mode) -> SetCursorStyle {
     }
 }
 
-fn format_mode(mode: &Mode) -> &'static str {
-    match mode {
-        Mode::View => "view",
-        Mode::AddSession => "add-session",
-        Mode::AddReward => "add-reward",
-        Mode::GoalForm => "goal-form",
-        Mode::QuantityDoneInput { .. } => "quantity-done",
-        Mode::DurationInput { .. } => "duration",
-        Mode::Timer => "timer",
-        Mode::NotesEdit => "notes-edit",
-    }
-}
-
 #[derive(Debug)]
 struct AppState {
     archive: PathBuf,
@@ -569,7 +599,6 @@ struct AppState {
     pending_session: Option<PendingSession>,
     notes: String,
     notes_cursor: usize,
-    status: Option<String>,
     needs_full_redraw: bool,
     focused_block: FocusedBlock,
     form_state: Option<FormState>,
@@ -631,7 +660,6 @@ fn main() -> Result<()> {
         pending_session: None,
         notes: String::new(),
         notes_cursor: 0,
-        status: None,
         needs_full_redraw: false,
         focused_block: FocusedBlock::SessionsList,
         form_state: None,
@@ -791,20 +819,7 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(chunks[1]);
 
-    let mut header_line = format!(
-        "Archive: {} (open with 'o') | Mode: {} ",
-        state.archive.display(),
-        format_mode(&state.mode),
-    );
-    if let Some(timer) = &state.timer {
-        header_line.push_str(&format!(
-            " | Timer: {} ({}s left)",
-            timer.label, timer.remaining
-        ));
-    }
-    if let Some(status) = &state.status {
-        header_line.push_str(&format!(" | {status}"));
-    }
+    let header_line = format!("Archive: {} (open with 'o')", state.archive.display());
 
     let dimmed = get_dimmed_style(&state.mode);
 
@@ -857,35 +872,73 @@ fn ui(f: &mut ratatui::Frame, state: &AppState) {
                 Style::default()
             };
 
-            let mut spans = vec![Span::styled(item.label.clone(), label_style)];
+            // Split label by newlines, then word-wrap each line to fit the list width
+            let label_lines: Vec<&str> = item.label.lines().collect();
+            let mut lines: Vec<Line> = label_lines
+                .iter()
+                .flat_map(|line_text| {
+                    wrap_text(line_text, list_width)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(wrap_idx, wrapped)| {
+                            let text = if wrap_idx == 0 {
+                                wrapped // First wrapped line, no indentation
+                            } else {
+                                format!("    {}", wrapped) // Continuation lines get 4 spaces
+                            };
+                            Line::from(vec![Span::styled(text, label_style)])
+                        })
+                })
+                .collect();
 
+            // Add hints based on item type
             if is_selected && !is_dialog_open {
-                match item.kind {
+                // For multiline items (RunningTimer), add hints to the first line
+                // For single-line items, add hints to the last line
+                let target_line_idx = if item.kind == ViewItemKind::RunningTimer && lines.len() > 1
+                {
+                    0 // First line for timer
+                } else {
+                    if lines.is_empty() {
+                        0
+                    } else {
+                        lines.len() - 1
+                    }
+                };
+
+                let hint_spans = match item.kind {
                     ViewItemKind::AddSession => {
-                        spans.push(Span::styled(
+                        vec![Span::styled(
                             " (Enter: add session)",
                             Style::default().fg(Color::DarkGray),
-                        ));
+                        )]
                     }
                     ViewItemKind::AddReward => {
-                        spans.push(Span::styled(
+                        vec![Span::styled(
                             " (Enter: receive reward)",
                             Style::default().fg(Color::DarkGray),
-                        ));
+                        )]
                     }
-                    ViewItemKind::Existing(_, _) => {
+                    ViewItemKind::Existing(_, _) | ViewItemKind::RunningTimer => {
                         if state.focused_block == FocusedBlock::SessionsList {
-                            spans.push(Span::styled(
+                            vec![Span::styled(
                                 " (e: edit, E: external edit)",
                                 Style::default().fg(Color::DarkGray),
-                            ));
+                            )]
+                        } else {
+                            vec![]
                         }
                     }
+                };
 
-                    _ => {}
+                if !hint_spans.is_empty() {
+                    if let Some(target_line) = lines.get_mut(target_line_idx) {
+                        target_line.spans.extend(hint_spans);
+                    }
                 }
             }
-            ListItem::new(Line::from(spans))
+
+            ListItem::new(lines)
         })
         .collect();
     let title = format!(
@@ -983,13 +1036,10 @@ enum ViewItemKind {
 
 fn build_timer_view_items(timer: &TimerState, width: usize) -> Vec<ViewItem> {
     let started_local = timer.started_at.with_timezone(&Local).format("%H:%M");
-    let info_item = ViewItem {
-        label: format!(
-            "[*] Running: {} ({}s left) [started {}]",
-            timer.label, timer.remaining, started_local
-        ),
-        kind: ViewItemKind::RunningTimer,
-    };
+    let info_line = format!(
+        "[*] {} ({}s left) [started {}]",
+        timer.label, timer.remaining, started_local
+    );
 
     let pct = if timer.total == 0 {
         0.0
@@ -1002,14 +1052,14 @@ fn build_timer_view_items(timer: &TimerState, width: usize) -> Vec<ViewItem> {
     let bar_width = width.max(1);
     let filled = (ratio * bar_width as f32) as usize;
     let empty = bar_width.saturating_sub(filled);
-    let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
+    let bar_line = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
 
-    let bar_item = ViewItem {
-        label: bar,
+    let combined_label = format!("{}\n{}", info_line, bar_line);
+
+    vec![ViewItem {
+        label: combined_label,
         kind: ViewItemKind::RunningTimer,
-    };
-
-    vec![info_item, bar_item]
+    }]
 }
 
 fn build_view_items(state: &AppState, width: usize) -> Vec<ViewItem> {
@@ -1125,7 +1175,6 @@ fn handle_form_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         KeyCode::Enter => {
             let name = form.goal_name.value.trim();
             if name.is_empty() {
-                state.status = Some("Goal name cannot be empty".to_string());
                 return Ok(false);
             }
 
@@ -1193,26 +1242,12 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('E') => {
             if selected_goal_id(state).is_some() {
-                match open_notes_in_external_editor(state) {
-                    Ok(_) => {
-                        state.status = Some("Notes updated via external editor".to_string());
-                    }
-                    Err(err) => {
-                        state.status = Some(format!("Failed to open editor: {err}"));
-                    }
-                }
-            } else {
-                state.status = Some("Select a goal before editing notes".to_string());
+                let _ = open_notes_in_external_editor(state);
             }
         }
-        KeyCode::Char('o') => match open_archive_in_file_manager(state) {
-            Ok(_) => {
-                state.status = Some("Opening archive in file manager".to_string());
-            }
-            Err(err) => {
-                state.status = Some(format!("Failed to open archive: {err}"));
-            }
-        },
+        KeyCode::Char('o') => {
+            let _ = open_archive_in_file_manager(state);
+        }
         KeyCode::Enter => {
             let items = build_view_items(state, 20);
             let Some(item) = items.get(state.selected) else {
@@ -1221,8 +1256,6 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
             match item.kind {
                 ViewItemKind::AddSession => {
                     if state.timer.is_some() {
-                        state.status =
-                            Some("Finish the running session before starting another".to_string());
                         return Ok(false);
                     }
                     state.mode = Mode::AddSession;
@@ -1231,8 +1264,6 @@ fn handle_view_key(state: &mut AppState, key: KeyEvent) -> Result<bool> {
                 }
                 ViewItemKind::AddReward => {
                     if state.timer.is_some() {
-                        state.status =
-                            Some("Finish the running session before starting another".to_string());
                         return Ok(false);
                     }
                     state.mode = Mode::AddReward;
@@ -1258,11 +1289,9 @@ fn shift_day(state: &mut AppState, delta: i64) -> Result<()> {
         .current_day
         .checked_add_signed(ChronoDuration::days(delta))
     else {
-        state.status = Some("Day change out of range".to_string());
         return Ok(());
     };
     if new_day > today {
-        state.status = Some("Cannot view future days".to_string());
         return Ok(());
     }
 
@@ -1270,7 +1299,6 @@ fn shift_day(state: &mut AppState, delta: i64) -> Result<()> {
     state.nodes = list_day_sessions(&state.archive, new_day)?;
     state.selected = build_view_items(state, 20).len().saturating_sub(1);
     refresh_notes_for_selection(state)?;
-    state.status = Some(format!("Showing {}", format_day_label(new_day)));
     Ok(())
 }
 
@@ -1488,6 +1516,13 @@ fn tick_timer(state: &mut AppState) {
 
 fn finish_timer(state: &mut AppState) {
     if let Some(mut timer) = state.timer.take() {
+        // If user is editing notes, save them first
+        if matches!(state.mode, Mode::NotesEdit) {
+            if let Err(e) = save_notes_for_selection(state) {
+                eprintln!("Failed to save notes: {e}");
+            }
+        }
+
         // Only kill spawned apps when finishing a reward, not a regular session
         if timer.is_reward {
             kill_spawned(&mut timer.spawned);
@@ -1511,9 +1546,7 @@ fn finish_timer(state: &mut AppState) {
                 goal_name: timer.label,
                 quantity_name,
             };
-            if let Some(unit) = goal_quantity_name(state, timer.goal_id) {
-                state.status = Some(format!("Enter quantity done ({unit})"));
-            }
+            state.focused_block = FocusedBlock::SessionsList;
         } else {
             finalize_session(state, pending, None);
         }
@@ -1528,7 +1561,6 @@ fn start_timer(
     is_reward: bool,
 ) -> Result<()> {
     if state.timer.is_some() {
-        state.status = Some("Finish the running session before starting another".to_string());
         return Ok(());
     }
 
@@ -1554,19 +1586,23 @@ fn start_timer(
     });
     state.selected = build_view_items(state, 20).len().saturating_sub(1);
     if let Err(e) = append_session_start_header(&state.archive, goal_id, started_at) {
-        state.status = Some(format!("Failed to prepare notes: {e}"));
+        eprintln!("Failed to prepare notes: {e}");
     }
     refresh_notes_for_selection(state)?;
     state.mode = Mode::Timer;
-    state.status = Some(format!(
-        "Running {}",
-        if is_reward { "reward" } else { "session" }
-    ));
     Ok(())
 }
 
 fn finalize_session(state: &mut AppState, pending: PendingSession, quantity: Option<u32>) {
+    // If user is editing notes, save and exit notes mode first
+    if matches!(state.mode, Mode::NotesEdit) {
+        if let Err(e) = save_notes_for_selection(state) {
+            eprintln!("Failed to save notes: {e}");
+        }
+    }
+
     state.mode = Mode::View;
+    state.focused_block = FocusedBlock::SessionsList;
     let duration_secs = pending.total.min(u32::MAX as u64) as u32;
     let created = match add_session(
         &state.archive,
@@ -1579,7 +1615,7 @@ fn finalize_session(state: &mut AppState, pending: PendingSession, quantity: Opt
     ) {
         Ok(session) => session,
         Err(e) => {
-            state.status = Some(format!("Failed to record session: {e}"));
+            eprintln!("Failed to record session: {e}");
             return;
         }
     };
@@ -1598,12 +1634,6 @@ fn finalize_session(state: &mut AppState, pending: PendingSession, quantity: Opt
             Err(e) => eprintln!("Failed to load day graph: {e}"),
         }
     }
-    let kind = if pending.is_reward {
-        SessionKind::Reward
-    } else {
-        SessionKind::Goal
-    };
-    state.status = Some(format!("Finished {}", kind_label(kind)));
 }
 
 fn parse_optional_u32(input: &str) -> Option<u32> {
