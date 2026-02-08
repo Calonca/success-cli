@@ -20,3 +20,15 @@ Cargo.lock
 # End of https://www.toptal.com/developers/gitignore/api/rust
 .serena/
 archive/
+dist/
+*.wasm
+*.js.map
+build/
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+ratzilla/
+.answers/
