@@ -96,7 +96,7 @@ fn seed_sessions_for_day(
 
     add_seed_session(archive, learn, start1, 60, false, Some(2));
     add_seed_session(archive, movie, start2, 30, true, None);
-    add_seed_session(archive, exercise, start3, 60, false, Some(30));
+    add_seed_session(archive, exercise, start3, 60, false, Some(3000));
     add_seed_session(archive, movie, start4, 30, true, None);
 }
 
@@ -124,7 +124,7 @@ fn seed_if_empty(state: &mut AppState) {
         "Exercise".to_string(),
         false,
         vec![],
-        Some("minutes".to_string()),
+        Some("steps".to_string()),
     )
     .expect("Failed to add seed goal");
 
