@@ -1,0 +1,14 @@
+[package]
+name = "success-web"
+version = "0.1.0"
+edition = "2021"
+description = "Web-based goal tracker built with Ratzilla"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+serde = { version = "1.0", features = ["derive"] }
+console_error_panic_hook = "0.1"
+success-core = { path = "../success-core", features = ["web"] }
+successlib = { git = "https://github.com/Calonca/success-lib", branch = "v0.5.x" }
+# Use this patch to access dynamic font atlas support and fix redraw not triggered when only the cursor position is updated.
+ratzilla = { git = "https://github.com/Calonca/ratzilla", branch = "fix/cursor-movement-invisible" }
