@@ -266,7 +266,6 @@ fn open_notes_in_external_editor(state: &mut AppState, archive: &Path) -> Result
     })?;
 
     success_core::notes::refresh_notes_for_selection(state);
-    state.notes_cursor = state.notes.len();
     Ok(())
 }
 

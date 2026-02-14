@@ -1,16 +1,16 @@
 use chrono::Local;
-use ratatui::layout::{Constraint, Direction, Layout, Position};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph};
 
 use crate::app::AppState;
 use crate::handlers::search_results;
-use crate::notes::notes_cursor_line_col;
 use crate::style;
 use crate::types::*;
 use crate::utils::*;
 use successlib::{SessionKind, SessionView};
+use tui_textarea::TextArea;
 
 // ── View items ───────────────────────────────────────────────────────────
 
@@ -310,25 +310,15 @@ pub fn ui(f: &mut ratatui::Frame, state: &AppState, header_text: &str) {
         ));
 
     if selected_goal_id(state).is_some() {
-        let (cursor_line, cursor_col) = notes_cursor_line_col(state);
-        let view_height = body_chunks[1].height.max(1) as usize;
-        let desired_mid = view_height / 2;
-        let offset = cursor_line.saturating_sub(desired_mid);
-        let offset_u16 = offset.min(u16::MAX as usize) as u16;
-        let notes_para = Paragraph::new(state.notes.clone())
-            .block(notes_block)
-            .style(dimmed)
-            .scroll((offset_u16, 0));
-        f.render_widget(notes_para, body_chunks[1]);
+        let notes_inner = notes_block.inner(body_chunks[1]);
+        f.render_widget(notes_block, body_chunks[1]);
 
         if matches!(state.mode, Mode::NotesEdit) {
-            let visible_line = cursor_line
-                .saturating_sub(offset)
-                .min(view_height.saturating_sub(1));
-            let cursor_y = body_chunks[1].y + visible_line as u16;
-            let cursor_x = body_chunks[1].x
-                + cursor_col.min(body_chunks[1].width.saturating_sub(1) as usize) as u16;
-            f.set_cursor_position(Position::new(cursor_x + 1, cursor_y + 1));
+            f.render_widget(&state.notes_textarea, notes_inner);
+        } else {
+            let notes_content = state.notes_textarea.lines().join("\n");
+            let notes_para = Paragraph::new(notes_content).style(dimmed);
+            f.render_widget(notes_para, notes_inner);
         }
     } else {
         let notes_para = Paragraph::new("Select a task to view notes")
@@ -344,6 +334,43 @@ pub fn ui(f: &mut ratatui::Frame, state: &AppState, header_text: &str) {
 }
 
 // ── Dialogs ──────────────────────────────────────────────────────────────
+
+fn render_prompted_textarea_line(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    prompt: &str,
+    textarea: &TextArea<'_>,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(prompt.len() as u16), Constraint::Min(1)])
+        .split(area);
+    f.render_widget(Paragraph::new(prompt), chunks[0]);
+    f.render_widget(textarea, chunks[1]);
+}
+
+fn render_labeled_form_field(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    prefix: &str,
+    style: Style,
+    textarea: &TextArea<'_>,
+    is_active: bool,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(prefix.len() as u16), Constraint::Min(1)])
+        .split(area);
+    f.render_widget(Paragraph::new(prefix).style(style), chunks[0]);
+    if is_active {
+        f.render_widget(textarea, chunks[1]);
+    } else {
+        f.render_widget(
+            Paragraph::new(single_line_textarea_value(textarea)).style(style),
+            chunks[1],
+        );
+    }
+}
 
 fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
     if !matches!(state.mode, Mode::AddSession | Mode::AddReward) {
@@ -376,9 +403,7 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
         ])
         .split(inner);
 
-    let input_line = format!("> {}", state.search_input.value);
-    let input_para = Paragraph::new(input_line);
-    f.render_widget(input_para, dialog_chunks[0]);
+    render_prompted_textarea_line(f, dialog_chunks[0], "> ", &state.search_input);
 
     let results = search_results(state);
     let list_items: Vec<ListItem> = results
@@ -404,13 +429,6 @@ fn render_goal_selector_dialog(f: &mut ratatui::Frame, state: &AppState) {
             .style(Style::default().fg(style::GRAY_DIM)),
         dialog_chunks[2],
     );
-
-    let cursor_x = dialog_chunks[0].x + 2 + state.search_input.cursor as u16;
-    let cursor_y = dialog_chunks[0].y;
-    f.set_cursor_position(Position::new(
-        cursor_x.min(dialog_chunks[0].x + dialog_chunks[0].width.saturating_sub(1)),
-        cursor_y,
-    ));
 }
 
 fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
@@ -476,8 +494,14 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
     } else {
         Style::default()
     };
-    let name_line = format!("{}{}", name_prefix, form.goal_name.value);
-    f.render_widget(Paragraph::new(name_line).style(name_style), layout[0]);
+    render_labeled_form_field(
+        f,
+        layout[0],
+        name_prefix,
+        name_style,
+        &form.goal_name,
+        form.current_field == FormField::GoalName,
+    );
 
     let qty_prefix = "Quantity name (optional): ";
     let qty_style = if form.current_field == FormField::Quantity {
@@ -485,8 +509,14 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
     } else {
         Style::default()
     };
-    let qty_line = format!("{}{}", qty_prefix, form.quantity_name.value);
-    f.render_widget(Paragraph::new(qty_line).style(qty_style), layout[1]);
+    render_labeled_form_field(
+        f,
+        layout[1],
+        qty_prefix,
+        qty_style,
+        &form.quantity_name,
+        form.current_field == FormField::Quantity,
+    );
 
     let cmd_prefix = "Commands (optional, separated by ;): ";
     let cmd_style = if form.current_field == FormField::Commands {
@@ -494,8 +524,14 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
     } else {
         Style::default()
     };
-    let cmd_line = format!("{}{}", cmd_prefix, form.commands.value);
-    f.render_widget(Paragraph::new(cmd_line).style(cmd_style), layout[2]);
+    render_labeled_form_field(
+        f,
+        layout[2],
+        cmd_prefix,
+        cmd_style,
+        &form.commands,
+        form.current_field == FormField::Commands,
+    );
 
     #[cfg(feature = "web")]
     let help_text =
@@ -507,24 +543,6 @@ fn render_goal_form_dialog(f: &mut ratatui::Frame, state: &AppState) {
     f.render_widget(help, layout[6]);
     #[cfg(not(feature = "web"))]
     f.render_widget(help, layout[5]);
-
-    match form.current_field {
-        FormField::GoalName => {
-            let cursor_x = layout[0].x + name_prefix.len() as u16 + form.goal_name.cursor as u16;
-            let cursor_y = layout[0].y;
-            f.set_cursor_position(Position::new(cursor_x, cursor_y));
-        }
-        FormField::Quantity => {
-            let cursor_x = layout[1].x + qty_prefix.len() as u16 + form.quantity_name.cursor as u16;
-            let cursor_y = layout[1].y;
-            f.set_cursor_position(Position::new(cursor_x, cursor_y));
-        }
-        FormField::Commands => {
-            let cursor_x = layout[2].x + cmd_prefix.len() as u16 + form.commands.cursor as u16;
-            let cursor_y = layout[2].y;
-            f.set_cursor_position(Position::new(cursor_x, cursor_y));
-        }
-    }
 }
 
 fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
@@ -553,17 +571,12 @@ fn render_duration_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         ])
         .split(inner);
 
-    let input_line = format!("> {}", state.duration_input.value);
-    f.render_widget(Paragraph::new(input_line), layout[0]);
+    render_prompted_textarea_line(f, layout[0], "> ", &state.duration_input);
 
     f.render_widget(
         Paragraph::new("Enter: start • Esc: cancel").style(Style::default().fg(style::GRAY_DIM)),
         layout[1],
     );
-
-    let cursor_x = inner.x + 2 + state.duration_input.cursor as u16;
-    let cursor_y = inner.y;
-    f.set_cursor_position(Position::new(cursor_x, cursor_y));
 }
 
 fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
@@ -599,15 +612,10 @@ fn render_quantity_input_dialog(f: &mut ratatui::Frame, state: &AppState) {
         ])
         .split(inner);
 
-    let input_line = format!("> {}", state.quantity_input.value);
-    f.render_widget(Paragraph::new(input_line), layout[0]);
+    render_prompted_textarea_line(f, layout[0], "> ", &state.quantity_input);
 
     f.render_widget(
         Paragraph::new("Enter: confirm • Esc: skip").style(Style::default().fg(style::GRAY_DIM)),
         layout[1],
     );
-
-    let cursor_x = inner.x + 2 + state.quantity_input.cursor as u16;
-    let cursor_y = inner.y;
-    f.set_cursor_position(Position::new(cursor_x, cursor_y));
 }
