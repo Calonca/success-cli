@@ -6,6 +6,7 @@ use crate::notes::refresh_notes_for_selection;
 use crate::types::*;
 use crate::ui::build_view_items;
 use successlib::{Goal, SessionView};
+use tui_textarea::TextArea;
 
 /// Central application state, generic over the storage backend.
 pub struct AppState {
@@ -15,14 +16,13 @@ pub struct AppState {
     pub current_day: NaiveDate,
     pub selected: usize,
     pub mode: Mode,
-    pub search_input: TextInput,
+    pub search_input: TextArea<'static>,
     pub search_selected: usize,
-    pub duration_input: TextInput,
-    pub quantity_input: TextInput,
+    pub duration_input: TextArea<'static>,
+    pub quantity_input: TextArea<'static>,
     pub timer: Option<TimerState>,
     pub pending_session: Option<PendingSession>,
-    pub notes: String,
-    pub notes_cursor: usize,
+    pub notes_textarea: TextArea<'static>,
     pub focused_block: FocusedBlock,
     pub form_state: Option<FormState>,
 }
@@ -43,14 +43,13 @@ impl AppState {
             current_day: today,
             selected: 0,
             mode: Mode::View,
-            search_input: TextInput::default(),
+            search_input: TextArea::default(),
             search_selected: 0,
-            duration_input: TextInput::default(),
-            quantity_input: TextInput::default(),
+            duration_input: TextArea::default(),
+            quantity_input: TextArea::default(),
             timer: None,
             pending_session: None,
-            notes: String::new(),
-            notes_cursor: 0,
+            notes_textarea: TextArea::default(),
             focused_block: FocusedBlock::SessionsList,
             form_state: None,
         };

@@ -45,7 +45,7 @@ pub fn finish_timer(state: &mut AppState) {
 
         if needs_quantity {
             state.pending_session = Some(pending);
-            state.quantity_input.clear();
+            clear_single_line_textarea(&mut state.quantity_input);
             state.mode = Mode::QuantityDoneInput {
                 goal_name: timer.label,
                 quantity_name,
@@ -71,8 +71,11 @@ pub fn start_timer(
     let today = Local::now().date_naive();
     if state.current_day != today {
         state.current_day = today;
-        state.nodes = successlib::list_day_sessions(state.archive_path.clone(), today.format("%Y-%m-%d").to_string())
-            .unwrap_or_default();
+        state.nodes = successlib::list_day_sessions(
+            state.archive_path.clone(),
+            today.format("%Y-%m-%d").to_string(),
+        )
+        .unwrap_or_default();
         state.selected = build_view_items(state, 20).len().saturating_sub(1);
         refresh_notes_for_selection(state);
     }
@@ -80,8 +83,7 @@ pub fn start_timer(
     let started_at = Utc::now();
 
     // Append session start header to notes
-    let mut note =
-        successlib::get_note(state.archive_path.clone(), goal_id).unwrap_or_default();
+    let mut note = successlib::get_note(state.archive_path.clone(), goal_id).unwrap_or_default();
     let start_local = started_at.with_timezone(&Local);
     let start_stamp = start_local.format("%Y-%m-%d %H:%M");
     note.push_str(&format!("---\n{start_stamp}\n"));
@@ -123,8 +125,11 @@ pub fn finalize_session(state: &mut AppState, pending: PendingSession, quantity:
         .map(|dt| dt.with_timezone(&Local).date_naive())
         .unwrap_or_else(|| Local::now().date_naive());
     if state.current_day == timer_day {
-        state.nodes = successlib::list_day_sessions(state.archive_path.clone(), timer_day.format("%Y-%m-%d").to_string())
-            .unwrap_or_default();
+        state.nodes = successlib::list_day_sessions(
+            state.archive_path.clone(),
+            timer_day.format("%Y-%m-%d").to_string(),
+        )
+        .unwrap_or_default();
         let items = build_view_items(state, 20);
         state.selected = items.len().saturating_sub(1);
         refresh_notes_for_selection(state);

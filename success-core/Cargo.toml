@@ -10,8 +10,12 @@ web = []
 
 [dependencies]
 ratatui = { version = "0.30", default-features = false, features = ["all-widgets"] }
+# Fork that updates ratatui from 0.29 to 0.30 to match ratzilla's ratatui version
+# and resolve unicode-width version conflict. Original: tui-textarea 0.7.0 uses ratatui 0.29
+tui-textarea = { git = "https://github.com/0xferrous/tui-textarea", rev = "b6bf812d1f5edab4f311f56d405a47341e9423cf", default-features = false, features = ["ratatui"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 fuzzy-matcher = "0.3"
 successlib = { git = "https://github.com/Calonca/success-lib", branch = "v0.5.x" }
+

@@ -10,6 +10,7 @@ use crate::utils::{
     format_duration_suggestion, parse_commands_input, parse_duration, parse_optional_u32,
     selected_goal_id,
 };
+use tui_textarea::TextArea;
 
 pub fn handle_view_key(state: &mut AppState, key: &AppKeyEvent) {
     match key.code {
@@ -53,7 +54,7 @@ pub fn handle_view_key(state: &mut AppState, key: &AppKeyEvent) {
                         return;
                     }
                     state.mode = Mode::AddSession;
-                    state.search_input.clear();
+                    clear_single_line_textarea(&mut state.search_input);
                     state.search_selected = 0;
                 }
                 ViewItemKind::AddReward => {
@@ -61,7 +62,7 @@ pub fn handle_view_key(state: &mut AppState, key: &AppKeyEvent) {
                         return;
                     }
                     state.mode = Mode::AddReward;
-                    state.search_input.clear();
+                    clear_single_line_textarea(&mut state.search_input);
                     state.search_selected = 0;
                 }
                 ViewItemKind::RunningTimer => {}
@@ -97,28 +98,28 @@ pub fn shift_day(state: &mut AppState, delta: i64) {
 }
 
 pub fn handle_search_key(state: &mut AppState, key: &AppKeyEvent) {
-    if state.search_input.handle_key(key) {
+    if handle_single_line_textarea_key(&mut state.search_input, key) {
         state.search_selected = 0;
         return;
     }
     match key.code {
         AppKeyCode::Esc => {
             state.mode = Mode::View;
-            state.search_input.clear();
+            clear_single_line_textarea(&mut state.search_input);
             state.search_selected = 0;
         }
         AppKeyCode::Enter => {
             let results = search_results(state);
             if let Some((_, result)) = results.get(state.search_selected) {
-                state.search_input.clear();
+                clear_single_line_textarea(&mut state.search_input);
                 state.search_selected = 0;
                 match result {
                     SearchResult::Create { name, is_reward } => {
                         state.form_state = Some(FormState {
                             current_field: FormField::GoalName,
-                            goal_name: TextInput::from_string(name.clone()),
-                            quantity_name: TextInput::default(),
-                            commands: TextInput::default(),
+                            goal_name: single_line_textarea_from_string(name.clone()),
+                            quantity_name: TextArea::default(),
+                            commands: TextArea::default(),
                             is_reward: *is_reward,
                         });
                         state.mode = Mode::GoalForm;
@@ -140,7 +141,7 @@ pub fn handle_search_key(state: &mut AppState, key: &AppKeyEvent) {
                             suggestion = Some(format_duration_suggestion(duration_mins));
                         }
                         let suggestion = suggestion.unwrap_or_else(|| "25m".to_string());
-                        state.duration_input = TextInput::from_string(suggestion);
+                        state.duration_input = single_line_textarea_from_string(suggestion);
                         state.mode = Mode::DurationInput {
                             is_reward: matches!(state.mode, Mode::AddReward),
                             goal_name: goal.name.clone(),
@@ -177,7 +178,7 @@ pub fn handle_form_key(state: &mut AppState, key: &AppKeyEvent) {
         FormField::Commands => &mut form.commands,
     };
 
-    if field.handle_key(key) {
+    if handle_single_line_textarea_key(field, key) {
         return;
     }
 
@@ -201,16 +202,20 @@ pub fn handle_form_key(state: &mut AppState, key: &AppKeyEvent) {
             };
         }
         AppKeyCode::Enter => {
-            let name = form.goal_name.value.trim().to_string();
+            let goal_name_input = single_line_textarea_value(&form.goal_name);
+            let name = goal_name_input.trim().to_string();
             if name.is_empty() {
                 return;
             }
 
-            let commands = parse_commands_input(&form.commands.value);
-            let quantity_name = if form.quantity_name.value.trim().is_empty() {
+            let commands_input = single_line_textarea_value(&form.commands);
+            let quantity_input = single_line_textarea_value(&form.quantity_name);
+
+            let commands = parse_commands_input(&commands_input);
+            let quantity_name = if quantity_input.trim().is_empty() {
                 None
             } else {
-                Some(form.quantity_name.value.trim().to_string())
+                Some(quantity_input.trim().to_string())
             };
             let is_reward = form.is_reward;
 
@@ -225,7 +230,7 @@ pub fn handle_form_key(state: &mut AppState, key: &AppKeyEvent) {
             state.goals.push(created.clone());
 
             state.form_state = None;
-            state.duration_input = TextInput::from_string("25m".to_string());
+            state.duration_input = single_line_textarea_from_string("25m".to_string());
             state.mode = Mode::DurationInput {
                 is_reward,
                 goal_name: created.name.clone(),
@@ -237,12 +242,12 @@ pub fn handle_form_key(state: &mut AppState, key: &AppKeyEvent) {
 }
 
 pub fn handle_duration_key(state: &mut AppState, key: &AppKeyEvent) {
-    if state.duration_input.handle_key(key) {
+    if handle_single_line_textarea_key(&mut state.duration_input, key) {
         return;
     }
     match key.code {
         AppKeyCode::Esc => {
-            state.duration_input.clear();
+            clear_single_line_textarea(&mut state.duration_input);
             state.mode = Mode::View;
         }
         AppKeyCode::Enter => {
@@ -254,7 +259,8 @@ pub fn handle_duration_key(state: &mut AppState, key: &AppKeyEvent) {
                 } => (*is_reward, goal_name.clone(), *goal_id),
                 _ => return,
             };
-            let secs = parse_duration(&state.duration_input.value).unwrap_or(25 * 60);
+            let duration_value = single_line_textarea_value(&state.duration_input);
+            let secs = parse_duration(&duration_value).unwrap_or(25 * 60);
             start_timer(state, goal_name, goal_id, secs as u32, is_reward);
         }
         _ => {}
@@ -266,13 +272,13 @@ pub fn handle_quantity_done_key(state: &mut AppState, key: &AppKeyEvent) {
         return;
     }
 
-    if state.quantity_input.handle_key(key) {
+    if handle_single_line_textarea_key(&mut state.quantity_input, key) {
         return;
     }
 
     match key.code {
         AppKeyCode::Esc => {
-            state.quantity_input.clear();
+            clear_single_line_textarea(&mut state.quantity_input);
             if let Some(pending) = state.pending_session.take() {
                 finalize_session(state, pending, None);
             } else {
@@ -280,11 +286,12 @@ pub fn handle_quantity_done_key(state: &mut AppState, key: &AppKeyEvent) {
             }
         }
         AppKeyCode::Enter => {
-            let qty = parse_optional_u32(&state.quantity_input.value);
+            let quantity_value = single_line_textarea_value(&state.quantity_input);
+            let qty = parse_optional_u32(&quantity_value);
             if let Some(pending) = state.pending_session.take() {
                 finalize_session(state, pending, qty);
             }
-            state.quantity_input.clear();
+            clear_single_line_textarea(&mut state.quantity_input);
         }
         _ => {}
     }
@@ -295,73 +302,36 @@ pub fn handle_timer_key(state: &mut AppState, key: &AppKeyEvent) {
 }
 
 pub fn handle_notes_key(state: &mut AppState, key: &AppKeyEvent) {
-    if key.ctrl {
-        match key.code {
-            AppKeyCode::Left => crate::notes::move_notes_cursor_word_left(state),
-            AppKeyCode::Right => crate::notes::move_notes_cursor_word_right(state),
-            _ => {}
-        }
-        return;
-    }
-
     match key.code {
         AppKeyCode::Esc => {
             save_notes_for_selection(state);
             state.mode = Mode::View;
             state.focused_block = FocusedBlock::SessionsList;
         }
-        AppKeyCode::Backspace => {
-            if state.notes_cursor > 0 {
-                let prev_len = state
-                    .notes
-                    .get(..state.notes_cursor)
-                    .and_then(|s| s.chars().last())
-                    .map(|c| c.len_utf8())
-                    .unwrap_or(1);
-                let start = state.notes_cursor - prev_len;
-                state.notes.replace_range(start..state.notes_cursor, "");
-                state.notes_cursor = start;
+        _ => {
+            let Some(input) = app_key_to_textarea_input(key, true) else {
+                return;
+            };
+
+            state.notes_textarea.input(input);
+
+            if matches!(
+                key.code,
+                AppKeyCode::Char(_)
+                    | AppKeyCode::Backspace
+                    | AppKeyCode::Delete
+                    | AppKeyCode::Enter
+                    | AppKeyCode::Tab
+            ) {
                 save_notes_for_selection(state);
             }
         }
-        AppKeyCode::Enter => {
-            let insert_at = state.notes_cursor;
-            state.notes.insert(insert_at, '\n');
-            state.notes_cursor += 1;
-            save_notes_for_selection(state);
-        }
-        AppKeyCode::Tab => {
-            let insert_at = state.notes_cursor;
-            state.notes.insert_str(insert_at, "    ");
-            state.notes_cursor += 4;
-            save_notes_for_selection(state);
-        }
-        AppKeyCode::Char(c) => {
-            if !key.ctrl {
-                let insert_at = state.notes_cursor;
-                state.notes.insert(insert_at, c);
-                state.notes_cursor += c.len_utf8();
-                save_notes_for_selection(state);
-            }
-        }
-        AppKeyCode::Left => {
-            crate::notes::move_notes_cursor_left(state);
-        }
-        AppKeyCode::Right => {
-            crate::notes::move_notes_cursor_right(state);
-        }
-        AppKeyCode::Up => {
-            crate::notes::move_notes_cursor_vert(state, -1);
-        }
-        AppKeyCode::Down => {
-            crate::notes::move_notes_cursor_vert(state, 1);
-        }
-        _ => {}
     }
 }
 
 pub fn search_results(state: &AppState) -> Vec<(String, SearchResult)> {
-    let q = state.search_input.value.trim();
+    let query = single_line_textarea_value(&state.search_input);
+    let q = query.trim();
     let is_reward = matches!(state.mode, Mode::AddReward);
 
     let goals = successlib::search_goals(

@@ -1,158 +1,86 @@
 use chrono::{DateTime, Utc};
+use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 use crate::key_event::{AppKeyCode, AppKeyEvent};
 use successlib::Goal;
 
-// ── TextInput ────────────────────────────────────────────────────────────
+// ── Single-line TextArea helpers ────────────────────────────────────────
 
-#[derive(Debug, Clone, Default)]
-pub struct TextInput {
-    pub value: String,
-    pub cursor: usize,
+pub fn single_line_textarea_from_string(value: String) -> TextArea<'static> {
+    let mut textarea = TextArea::from([value]);
+    textarea.move_cursor(CursorMove::End);
+    textarea
 }
 
-impl TextInput {
-    pub fn new(value: String) -> Self {
-        let len = value.chars().count();
-        Self { value, cursor: len }
-    }
+pub fn single_line_textarea_value(textarea: &TextArea<'_>) -> String {
+    textarea.lines().join("")
+}
 
-    pub fn from_string(value: String) -> Self {
-        Self::new(value)
-    }
+pub fn clear_single_line_textarea(textarea: &mut TextArea<'static>) {
+    *textarea = TextArea::default();
+}
 
-    /// Returns true if the key was consumed.
-    pub fn handle_key(&mut self, key: &AppKeyEvent) -> bool {
+/// Returns true if the key was consumed.
+pub fn handle_single_line_textarea_key(
+    textarea: &mut TextArea<'static>,
+    key: &AppKeyEvent,
+) -> bool {
+    let Some(input) = app_key_to_textarea_input(key, false) else {
+        return false;
+    };
+
+    let consumed = textarea.input(input);
+    consumed
+        || matches!(
+            key.code,
+            AppKeyCode::Left | AppKeyCode::Right | AppKeyCode::Home | AppKeyCode::End
+        )
+}
+
+pub fn app_key_to_textarea_input(key: &AppKeyEvent, multiline: bool) -> Option<Input> {
+    if key.ctrl {
         match key.code {
-            AppKeyCode::Char(c) if !key.ctrl && !key.alt => {
-                self.insert_char(c);
-                true
-            }
             AppKeyCode::Backspace => {
-                self.delete_char_back();
-                true
+                return Some(Input {
+                    key: Key::Backspace,
+                    ctrl: false,
+                    alt: true,
+                    shift: key.shift,
+                });
             }
             AppKeyCode::Delete => {
-                self.delete_char_forward();
-                true
+                return Some(Input {
+                    key: Key::Delete,
+                    ctrl: false,
+                    alt: true,
+                    shift: key.shift,
+                });
             }
-            AppKeyCode::Left => {
-                if key.ctrl {
-                    self.move_word_left();
-                } else {
-                    self.move_left();
-                }
-                true
-            }
-            AppKeyCode::Right => {
-                if key.ctrl {
-                    self.move_word_right();
-                } else {
-                    self.move_right();
-                }
-                true
-            }
-            AppKeyCode::Home => {
-                self.cursor = 0;
-                true
-            }
-            AppKeyCode::End => {
-                self.cursor = self.value.chars().count();
-                true
-            }
-            _ => false,
+            _ => {}
         }
     }
 
-    pub fn insert_char(&mut self, c: char) {
-        if self.cursor >= self.value.chars().count() {
-            self.value.push(c);
-            self.cursor += 1;
-        } else {
-            let mut result = String::new();
-            for (i, ch) in self.value.chars().enumerate() {
-                if i == self.cursor {
-                    result.push(c);
-                }
-                result.push(ch);
-            }
-            self.value = result;
-            self.cursor += 1;
-        }
-    }
+    let mapped = match key.code {
+        AppKeyCode::Char(c) => Key::Char(c),
+        AppKeyCode::Backspace => Key::Backspace,
+        AppKeyCode::Delete => Key::Delete,
+        AppKeyCode::Left => Key::Left,
+        AppKeyCode::Right => Key::Right,
+        AppKeyCode::Home => Key::Home,
+        AppKeyCode::End => Key::End,
+        AppKeyCode::Up if multiline => Key::Up,
+        AppKeyCode::Down if multiline => Key::Down,
+        AppKeyCode::Enter if multiline => Key::Enter,
+        AppKeyCode::Tab if multiline => Key::Tab,
+        _ => return None,
+    };
 
-    pub fn delete_char_back(&mut self) {
-        if self.cursor > 0 {
-            let mut result = String::new();
-            for (i, ch) in self.value.chars().enumerate() {
-                if i != self.cursor - 1 {
-                    result.push(ch);
-                }
-            }
-            self.value = result;
-            self.cursor -= 1;
-        }
-    }
-
-    pub fn delete_char_forward(&mut self) {
-        if self.cursor < self.value.chars().count() {
-            let mut result = String::new();
-            for (i, ch) in self.value.chars().enumerate() {
-                if i != self.cursor {
-                    result.push(ch);
-                }
-            }
-            self.value = result;
-        }
-    }
-
-    pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
-    }
-
-    pub fn move_right(&mut self) {
-        if self.cursor < self.value.chars().count() {
-            self.cursor += 1;
-        }
-    }
-
-    pub fn move_word_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let chars: Vec<char> = self.value.chars().collect();
-        let mut idx = self.cursor;
-        while idx > 0 && idx <= chars.len() && chars[idx - 1].is_whitespace() {
-            idx -= 1;
-        }
-        while idx > 0 && idx <= chars.len() && !chars[idx - 1].is_whitespace() {
-            idx -= 1;
-        }
-        self.cursor = idx;
-    }
-
-    pub fn move_word_right(&mut self) {
-        let chars: Vec<char> = self.value.chars().collect();
-        let len = chars.len();
-        if self.cursor >= len {
-            return;
-        }
-        let mut idx = self.cursor;
-        while idx < len && !chars[idx].is_whitespace() {
-            idx += 1;
-        }
-        while idx < len && chars[idx].is_whitespace() {
-            idx += 1;
-        }
-        self.cursor = idx;
-    }
-
-    pub fn clear(&mut self) {
-        self.value.clear();
-        self.cursor = 0;
-    }
+    Some(Input {
+        key: mapped,
+        ctrl: key.ctrl,
+        alt: key.alt,
+        shift: key.shift,
+    })
 }
 
 // ── Enums ────────────────────────────────────────────────────────────────
@@ -184,12 +112,12 @@ pub enum FormField {
     Commands,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct FormState {
     pub current_field: FormField,
-    pub goal_name: TextInput,
-    pub quantity_name: TextInput,
-    pub commands: TextInput,
+    pub goal_name: TextArea<'static>,
+    pub quantity_name: TextArea<'static>,
+    pub commands: TextArea<'static>,
     pub is_reward: bool,
 }
 
