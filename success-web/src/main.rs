@@ -182,17 +182,18 @@ fn seed_if_empty(state: &mut AppState) {
     );
 
     let today = state.current_day;
-    seed_sessions_for_day(&archive, today, &learn, &exercise, &read, &movie, &clean, false);
+    seed_sessions_for_day(
+        &archive, today, &learn, &exercise, &read, &movie, &clean, false,
+    );
     if let Some(prev_day) = today.pred_opt() {
-        seed_sessions_for_day(&archive, prev_day, &learn, &exercise, &read, &movie, &clean, true);
+        seed_sessions_for_day(
+            &archive, prev_day, &learn, &exercise, &read, &movie, &clean, true,
+        );
     }
 
     state.goals = successlib::list_goals(archive.clone(), None).unwrap_or_default();
-    state.nodes = successlib::list_day_sessions(
-        archive,
-        today.format("%Y-%m-%d").to_string(),
-    )
-    .unwrap_or_default();
+    state.nodes = successlib::list_day_sessions(archive, today.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
     state.selected = ui::build_view_items(state, 20).len().saturating_sub(1);
     refresh_notes_for_selection(state);
 }
@@ -211,10 +212,10 @@ fn main() {
             .font_atlas_config(FontAtlasConfig::dynamic(&["JetBrains Mono"], 16.0)),
     )
     .expect("Failed to create WebGl2Backend");
-    let terminal = ratzilla::ratatui::Terminal::new(backend).expect("Failed to create terminal");
+    let mut terminal = ratzilla::ratatui::Terminal::new(backend).expect("Failed to create terminal");
 
     let state_key = Rc::clone(&state);
-    terminal.on_key_event(move |key| {
+    let _ = terminal.on_key_event(move |key| {
         let mut s = state_key.borrow_mut();
         let app_key = convert_key(&key);
         s.handle_key(app_key);
